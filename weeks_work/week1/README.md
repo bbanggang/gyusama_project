@@ -101,13 +101,14 @@ docker build -f Dockerfile.pc -t bbanggang/ros2-base:latest .
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
 ```
-**결과**: RTX 5070 Ti 정상 인식, Driver 590.48 / CUDA 13.1 확인 ✅
+**결과**: RTX 5070 Ti 정상 인식, Driver 590.48 / CUDA 13.1 확인 
+![nvidia-smi](https://github.com/user-attachments/assets/d36db0cf-be21-49b3-8009-427b93d5ca70)
 
 ### 확인 2 — Dockerfile 빌드 성공
 ```bash
 docker build -f Dockerfile.pc -t bbanggang/ros2-base:latest .
 ```
-**결과**: `FINISHED` 출력, 이미지 `bbanggang/ros2-base:latest` 생성 ✅
+**결과**: `FINISHED` 출력, 이미지 `bbanggang/ros2-base:latest` 생성 
 
 ### 확인 3 — 컨테이너 내 ros2 topic list 정상 동작
 ```bash
@@ -118,7 +119,7 @@ docker run --rm --gpus all bbanggang/ros2-base:latest ros2 topic list
 /parameter_events
 /rosout
 ```
-두 기본 토픽 정상 출력 ✅
+두 기본 토픽 정상 출력 
 
 ---
 
@@ -142,27 +143,3 @@ docker run --rm --gpus all bbanggang/ros2-base:latest ros2 topic list
   ```
 - 추후 경로를 추가해야 한다면 `entrypoint.sh`에서 `export PYTHONPATH=추가경로:$PYTHONPATH` 방식으로 붙이는 것이 안전하다.
 
-### docker build 캐시 활용
-- ROS2 설치 레이어는 빌드 시간이 매우 길다 (약 22분).
-- Dockerfile 수정 시 변경한 레이어 **아래부터** 전부 재빌드되므로, 자주 바뀌는 내용은 Dockerfile 하단에 배치해야 빌드 시간을 줄일 수 있다.
-- 현재 구조는 기본 패키지 → ROS2 저장소 등록 → ROS2 설치 → 작업 디렉토리 → entrypoint 순으로 올바르게 배치되어 있다.
-
-### Docker 이미지 용량 주의
-- `bbanggang/ros2-base:latest`는 ROS2 Desktop + Nav2 포함으로 용량이 크다.
-- Docker Hub push 전 `docker images` 명령어로 용량을 확인할 것.
-- 불필요한 패키지를 줄이고 싶다면 `ros-jazzy-desktop` 대신 `ros-jazzy-ros-base`를 베이스로 필요한 패키지만 추가하는 방식도 고려할 수 있다.
-
----
-
-## 4. 다음 주차 준비 사항 (2주차)
-
-2주차에서는 Docker Buildx로 ARM64(RPi5용) 이미지를 빌드하기 위해
-QEMU 에뮬레이터 등록과 멀티아키텍처 전용 빌더 생성을 진행한다.
-
-**현재 Buildx 상태**:
-- `gyusama-builder` 미생성
-- QEMU binfmt 미등록 → ARM64 빌드 불가 상태
-
-**RPi5 연결**:
-- 2~3주차 중 공유기(192.168.0.x 대역)에 RPi5 연결 필요
-- 현재 PC IP: 192.168.0.11
