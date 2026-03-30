@@ -9,16 +9,16 @@
 ### 1-1. 시스템 사전 점검
 프로젝트 시작 전 전체 개발 환경 상태를 점검했다.
 
-| 항목 | 결과 |
-|------|------|
-| Ubuntu 24.04.4 LTS | 정상 확인 |
-| RTX 5070 Ti — Driver 590.48 / CUDA 13.1 | 정상 확인 |
-| Docker 29.3.1 + NVIDIA Runtime | 정상 확인 |
-| NVIDIA Container Toolkit 1.19.0 | 정상 확인 |
-| Isaac Sim 5.1.0 (`~/isaac_env`) | 정상 확인 |
-| PyTorch 2.7.0+cu128 / ONNX 1.20.1 | 정상 확인 |
-| RAM 62GB / 디스크 여유 126GB | 충분 |
-| ROS2 Jazzy | 설치 |
+| 항목 | 점검 명령어 | 결과 |
+|------|------------|------|
+| Ubuntu 24.04.4 LTS | `lsb_release -a` | 정상 확인 |
+| RTX 5070 Ti — Driver 590.48 / CUDA 13.1 | `nvidia-smi` | 정상 확인 |
+| Docker 29.3.1 + NVIDIA Runtime | `docker info \| grep -E "Version\|Runtime"` | 정상 확인 |
+| NVIDIA Container Toolkit 1.19.0 | `nvidia-ctk --version` | 정상 확인 |
+| Isaac Sim 5.1.0 (`~/isaac_env`) | `~/isaac_env/bin/pip show isaacsim \| grep Version` | 정상 확인 |
+| PyTorch 2.7.0+cu128 / ONNX 1.20.1 | `~/isaac_env/bin/pip list \| grep -E "torch\|onnx"` | 정상 확인 |
+| RAM 62GB / 디스크 여유 126GB | `free -h && df -h /` | 충분 |
+| ROS2 Jazzy | `ls /opt/ros/jazzy/setup.bash` | 설치 |
 
 ---
 
