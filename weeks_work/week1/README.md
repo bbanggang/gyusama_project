@@ -92,7 +92,6 @@ gyusama-project/
 cd ~/gyusama-project/docker
 docker build -f Dockerfile.pc -t bbanggang/ros2-base:latest .
 ```
-빌드 소요 시간: 약 27분 (최초 빌드, 이후 캐시로 빠름)
 
 ---
 
