@@ -14,15 +14,8 @@
 | **로봇 플랫폼** | TurtleBot3 (RPi5 기반 조립 완료) |
 | **컨테이너** | Docker + Buildx (x86_64 / ARM64 멀티아키텍처) |
 | **AI 프레임워크** | PyTorch → ONNX Runtime (INT8 양자화) |
-| **개발 도구** | Claude Code (바이브 코딩), Git, Docker Hub |
+| **개발 도구** | Claude Code, Git, Docker Hub |
 | **통신** | FastDDS + QoS 프로필 |
-
-### 듀얼부팅 환경 참고사항
-
-- **Windows 11 Pro (C:)**: 일반 작업, 문서 작성
-- **Ubuntu 24.04 (D:)**: ROS2, Isaac Sim, Docker 등 모든 개발 작업 수행
-- Ubuntu 부팅 후 터미널에서 `nvidia-smi`로 GPU 인식 확인 필수
-- Isaac Sim은 `~/.local/share/ov/pkg/isaac-sim-*` 경로에 설치되어 있음
 
 ---
 
