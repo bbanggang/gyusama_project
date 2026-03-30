@@ -1,0 +1,55 @@
+# =====================================================================
+# gyusama-project — PC용 베이스 이미지 (x86_64)
+# Base : CUDA 12.6 + Ubuntu 24.04
+# ROS2 : Jazzy Jalisco
+# =====================================================================
+FROM nvidia/cuda:12.6.0-base-ubuntu24.04
+
+# 비대화형 설치 모드
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# ── 기본 패키지 ──────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y \
+    curl \
+    gnupg2 \
+    lsb-release \
+    locales \
+    software-properties-common \
+    && locale-gen en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── ROS2 Jazzy apt 저장소 등록 ────────────────────────────────────────
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+      http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+      > /etc/apt/sources.list.d/ros2.list
+
+# ── ROS2 Jazzy 설치 ───────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y \
+    ros-jazzy-desktop \
+    ros-jazzy-turtlebot3 \
+    ros-jazzy-turtlebot3-msgs \
+    ros-jazzy-navigation2 \
+    ros-jazzy-nav2-bringup \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    python3-argcomplete \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── ROS2 환경 변수 ────────────────────────────────────────────────────
+ENV ROS_DISTRO=jazzy
+ENV ROS_DOMAIN_ID=1
+ENV TURTLEBOT3_MODEL=burger
+ENV PYTHONPATH=/opt/ros/jazzy/lib/python3.12/site-packages
+
+# ── 작업 디렉토리 ─────────────────────────────────────────────────────
+WORKDIR /ros2_ws
+
+# ── entrypoint: ROS2 환경 자동 소싱 ──────────────────────────────────
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
