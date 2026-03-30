@@ -18,7 +18,7 @@
 | Isaac Sim 5.1.0 (`~/isaac_env`) | 정상 확인 |
 | PyTorch 2.7.0+cu128 / ONNX 1.20.1 | 정상 확인 |
 | RAM 62GB / 디스크 여유 126GB | 충분 |
-| ROS2 Jazzy | **미설치 → 이번 주 설치** |
+| ROS2 Jazzy | 설치 |
 
 ---
 
@@ -49,7 +49,6 @@ source ~/.bashrc
 ---
 
 ### 1-3. 프로젝트 디렉토리 구조 생성
-README에 정의된 구조대로 폴더를 생성했다.
 
 ```bash
 mkdir -p ~/gyusama-project/{docker,src/{lane_detection,inference_node,nav2_config,turtlebot3_control},isaac_sim,models,data/{synthetic,real,calibration},configs}
