@@ -111,6 +111,12 @@ def run_simulation(sim: SimulationContext, scene: InteractiveScene):
     print(f"  LiDAR         : LDS-02 360° @ 5Hz")
     print("=" * 60 + "\n")
 
+    # 휠 조인트 ID 사전 조회 (루프 밖에서 한 번만)
+    wheel_joint_ids, _ = scene["robot"].find_joints(
+        ["a__namespace_wheel_left_joint", "a__namespace_wheel_right_joint"]
+    )
+    print(f"[INFO] 휠 조인트 ID: {wheel_joint_ids}")
+
     while simulation_app.is_running():
         # ── 전진 속도 명령 (직선 주행 테스트) ──────────────────────────────
         if step_count < 200:
@@ -118,12 +124,7 @@ def run_simulation(sim: SimulationContext, scene: InteractiveScene):
         else:
             wheel_vel = torch.zeros(1, 2, device=sim.device)           # 정지
 
-        scene["robot"].set_joint_velocity_target(
-            wheel_vel,
-            joint_ids=scene["robot"].find_joints(
-                ["a__namespace_wheel_left_joint", "a__namespace_wheel_right_joint"]
-            )[0],
-        )
+        scene["robot"].set_joint_velocity_target(wheel_vel, joint_ids=wheel_joint_ids)
 
         # ── 씬 업데이트 ─────────────────────────────────────────────────────
         scene.write_data_to_sim()
