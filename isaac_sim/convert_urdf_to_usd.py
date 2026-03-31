@@ -22,9 +22,16 @@ args_cli.headless = True
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# ── Isaac Sim 완전 초기화 후 임포트 ─────────────────────────────────────────
 import os
-import carb
+import omni.kit.app
 import omni.kit.commands
+
+# ── URDF importer 확장 명시적 활성화 ────────────────────────────────────────
+manager = omni.kit.app.get_app().get_extension_manager()
+manager.set_extension_enabled_immediate("isaacsim.asset.importer.urdf", True)
+
+# 확장 로드 후 임포트
 from isaacsim.asset.importer.urdf import _urdf
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────────────
@@ -46,14 +53,14 @@ import_config.merge_fixed_joints = False
 import_config.convex_decomp = False
 import_config.import_inertia_tensor = True
 import_config.self_collision = False
-import_config.fix_base = False              # 바퀴 달린 로봇 → 고정 베이스 X
+import_config.fix_base = False
 import_config.distance_scale = 1.0
 import_config.density = 0.0
 import_config.default_drive_type = _urdf.UrdfJointTargetType.JOINT_DRIVE_VELOCITY
 import_config.default_drive_strength = 1e7
 import_config.default_position_drive_damping = 1e5
 
-# ── 변환 실행 ────────────────────────────────────────────────────────────────
+# ── 변환 실행 ─────────────────────────────────────────────────────────────────
 print("\n[INFO] 변환 중...")
 status, stage_path = omni.kit.commands.execute(
     "URDFParseAndImportFile",
