@@ -21,7 +21,7 @@ TURTLEBOT3_USD_PATH = os.path.expanduser(
 # ── Dynamixel XL430-W250 액추에이터 설정 ──────────────────────────────────────
 # TurtleBot3 Burger는 속도 제어 모드로 동작
 DYNAMIXEL_XL430_CFG = DCMotorCfg(
-    joint_names_expr=["wheel_left_joint", "wheel_right_joint"],
+    joint_names_expr=["a__namespace_wheel_left_joint", "a__namespace_wheel_right_joint"],
     saturation_effort=1.4,   # XL430 스톨 토크 (Nm)
     effort_limit=1.4,
     velocity_limit=4.82,     # XL430 최대 속도 (rad/s, 46 RPM)
@@ -54,7 +54,7 @@ TURTLEBOT3_CFG = ArticulationCfg(
 # ── IMX219 카메라 설정 ────────────────────────────────────────────────────────
 # 실제 IMX219: 3280x2464, f=3.04mm / 시뮬레이션: 640x480 다운샘플
 IMX219_CAMERA_CFG = CameraCfg(
-    prim_path="{ENV_REGEX_NS}/Robot/base_link/front_camera",
+    prim_path="{ENV_REGEX_NS}/Robot/a__namespace_base_link/front_camera",
     update_period=0.1,       # 10Hz
     height=480,
     width=640,
@@ -75,7 +75,7 @@ IMX219_CAMERA_CFG = CameraCfg(
 # ── LDS-02 LiDAR 설정 (RayCaster) ────────────────────────────────────────────
 # LDS-02 스펙: 360° / 1° 해상도 / 0.12~3.5m 범위 / 5Hz
 LDS02_LIDAR_CFG = RayCasterCfg(
-    prim_path="{ENV_REGEX_NS}/Robot/base_link",
+    prim_path="{ENV_REGEX_NS}/Robot/a__namespace_base_scan",
     mesh_prim_paths=["/World/Ground"],
     pattern_cfg=patterns.LidarPatternCfg(
         channels=1,

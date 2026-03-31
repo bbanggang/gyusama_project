@@ -118,7 +118,12 @@ def run_simulation(sim: SimulationContext, scene: InteractiveScene):
         else:
             wheel_vel = torch.zeros(1, 2, device=sim.device)           # 정지
 
-        scene["robot"].set_joint_velocity_target(wheel_vel)
+        scene["robot"].set_joint_velocity_target(
+            wheel_vel,
+            joint_ids=scene["robot"].find_joints(
+                ["a__namespace_wheel_left_joint", "a__namespace_wheel_right_joint"]
+            )[0],
+        )
 
         # ── 씬 업데이트 ─────────────────────────────────────────────────────
         scene.write_data_to_sim()
