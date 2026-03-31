@@ -6,15 +6,16 @@ TurtleBot3 Burger 로봇 설정 (IsaacLab ArticulationCfg)
 - 센서: IMX219 카메라 + LDS-02 LiDAR
 """
 
+import os
+
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import DCMotorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.sensors import CameraCfg, RayCasterCfg, patterns
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-# ── TurtleBot3 Burger USD 경로 ────────────────────────────────────────────────
-TURTLEBOT3_USD_PATH = (
-    f"{ISAAC_NUCLEUS_DIR}/Robots/Turtlebot/turtlebot3_burger/turtlebot3_burger.usd"
+# ── TurtleBot3 Burger USD 경로 (URDF 변환 후 로컬 저장본) ────────────────────
+TURTLEBOT3_USD_PATH = os.path.expanduser(
+    "~/gyusama-project/isaac_sim/assets/turtlebot3_burger.usd"
 )
 
 # ── Dynamixel XL430-W250 액추에이터 설정 ──────────────────────────────────────
