@@ -1,0 +1,60 @@
+services:
+
+  # ── ROS2 기본 노드 (DDS 통신 기반) ────────────────────────────────────
+  ros2-core:
+    image: bbanggang/turtlebot3-ros2:v1.0
+    container_name: ros2-core
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=1
+      - TURTLEBOT3_MODEL=burger
+    command: ros2 daemon start
+    restart: unless-stopped
+
+  # ── 카메라 드라이버 노드 (IMX219) ────────────────────────────────────
+  camera-node:
+    image: bbanggang/turtlebot3-ros2:v1.0
+    container_name: camera-node
+    network_mode: host
+    privileged: true                 # 카메라 디바이스 접근 권한
+    devices:
+      - /dev/video0:/dev/video0      # IMX219 CSI 카메라
+    environment:
+      - ROS_DOMAIN_ID=1
+    command: >
+      ros2 run v4l2_camera v4l2_camera_node
+      --ros-args -p video_device:=/dev/video0
+    depends_on:
+      - ros2-core
+    restart: unless-stopped
+
+  # ── AI 추론 노드 (ONNX Runtime INT8) ─────────────────────────────────
+  inference-node:
+    image: bbanggang/turtlebot3-ros2:v1.0
+    container_name: inference-node
+    network_mode: host
+    volumes:
+      - ../models:/models:ro          # 호스트의 모델 파일 마운트
+    environment:
+      - ROS_DOMAIN_ID=1
+      - MODEL_PATH=/models/model.onnx
+    command: ros2 run turtlebot3_bringup turtlebot3_node
+    depends_on:
+      - camera-node
+    restart: unless-stopped
+
+  # ── 모터 제어 노드 (Dynamixel / ros2_control) ─────────────────────────
+  control-node:
+    image: bbanggang/turtlebot3-ros2:v1.0
+    container_name: control-node
+    network_mode: host
+    privileged: true                  # Dynamixel USB 시리얼 접근 권한
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0    # Dynamixel U2D2 어댑터
+    environment:
+      - ROS_DOMAIN_ID=1
+      - TURTLEBOT3_MODEL=burger
+    command: ros2 launch turtlebot3_bringup robot.launch.py
+    depends_on:
+      - ros2-core
+    restart: unless-stopped
