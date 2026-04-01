@@ -32,6 +32,7 @@ docker buildx build \
 ```
 
 **결과**: Docker Hub에 단일 이미지 태그(`v1.0`)로 amd64 + arm64 manifest list가 등록됨
+![docker hub image](https://github.com/user-attachments/assets/46de69c0-5c16-4fdb-a1b4-d10d0463a38e)
 - RPi5에서 pull 시 ARM64 이미지 자동 선택
 - PC에서 pull 시 amd64 이미지 자동 선택
 
@@ -123,14 +124,7 @@ ros2 topic echo /test_topic
 ```
 
 **결과**:
-```
-data: hello_from_rpi5
----
-data: hello_from_rpi5
----
-data: hello_from_rpi5
----
-```
+![communication image](https://github.com/user-attachments/assets/6b1674ba-6bf5-4d3f-93b6-2ff46bb5c779)
 
 FastDDS를 통해 같은 `ROS_DOMAIN_ID=1` 도메인 내에서 PC와 RPi5 간 토픽 통신 정상 동작 확인.
 
