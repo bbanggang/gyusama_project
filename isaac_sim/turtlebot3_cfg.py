@@ -76,7 +76,7 @@ IMX219_CAMERA_CFG = CameraCfg(
 # LDS-02 스펙: 360° / 1° 해상도 / 0.12~3.5m 범위 / 5Hz
 LDS02_LIDAR_CFG = RayCasterCfg(
     prim_path="{ENV_REGEX_NS}/Robot/a__namespace_base_scan",
-    mesh_prim_paths=["/World/Ground", "/World/Track"],
+    mesh_prim_paths=["/World/Ground"],
     pattern_cfg=patterns.LidarPatternCfg(
         channels=1,
         vertical_fov_range=(-0.0, 0.0),
