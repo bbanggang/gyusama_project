@@ -42,9 +42,9 @@ from turtlebot3_cfg import IMX219_CAMERA_CFG, LDS02_LIDAR_CFG, TURTLEBOT3_CFG
 class TurtleBot3SceneCfg(InteractiveSceneCfg):
     """TurtleBot3 주행 환경 씬 설정"""
 
-    # 지면
+    # 지면 (RayCaster mesh_prim_paths와 경로 일치 필수)
     ground = AssetBaseCfg(
-        prim_path="/World/Ground",
+        prim_path="/World/ground",
         spawn=sim_utils.GroundPlaneCfg(),
     )
 
@@ -80,9 +80,9 @@ def build_track(sim: SimulationContext):
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.4, 0.4, 0.9)),
     )
     # 좌벽
-    wall_cfg.func("/World/Track/WallLeft", wall_cfg, translation=(-1.0, 0.0, 0.075))
+    wall_cfg.func("/World/track/WallLeft", wall_cfg, translation=(-1.0, 0.0, 0.075))
     # 우벽
-    wall_cfg.func("/World/Track/WallRight", wall_cfg, translation=(1.0, 0.0, 0.075))
+    wall_cfg.func("/World/track/WallRight", wall_cfg, translation=(1.0, 0.0, 0.075))
 
     wall_cfg2 = sim_utils.CuboidCfg(
         size=(2.1, 0.05, 0.15),
@@ -92,9 +92,9 @@ def build_track(sim: SimulationContext):
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.4, 0.4, 0.9)),
     )
     # 앞벽
-    wall_cfg2.func("/World/Track/WallFront", wall_cfg2, translation=(0.0, 1.5, 0.075))
+    wall_cfg2.func("/World/track/WallFront", wall_cfg2, translation=(0.0, 1.5, 0.075))
     # 뒷벽
-    wall_cfg2.func("/World/Track/WallBack", wall_cfg2, translation=(0.0, -1.5, 0.075))
+    wall_cfg2.func("/World/track/WallBack", wall_cfg2, translation=(0.0, -1.5, 0.075))
 
 
 def run_simulation(sim: SimulationContext, scene: InteractiveScene):
@@ -120,7 +120,8 @@ def run_simulation(sim: SimulationContext, scene: InteractiveScene):
     while simulation_app.is_running():
         # ── 전진 속도 명령 (직선 주행 테스트) ──────────────────────────────
         if step_count < 200:
-            wheel_vel = torch.tensor([[2.0, 2.0]], device=sim.device)  # rad/s
+            # TurtleBot3: 오른쪽 바퀴 조인트 축이 반전 → 전진 시 오른쪽 음수
+            wheel_vel = torch.tensor([[2.0, -2.0]], device=sim.device)  # rad/s
         else:
             wheel_vel = torch.zeros(1, 2, device=sim.device)           # 정지
 
