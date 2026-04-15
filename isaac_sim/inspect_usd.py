@@ -1,34 +1,36 @@
-"""USD 구조 확인 + defaultPrim 수정 스크립트"""
-import argparse
-from isaaclab.app import AppLauncher
+"""
+ros2-turtlebot.usd 구조 검사 스크립트
+실행: ~/isaac_env/bin/python ~/gyusama-project/isaac_sim/inspect_usd.py
+"""
+import os
+import sys
 
-parser = argparse.ArgumentParser()
-AppLauncher.add_app_launcher_args(parser)
-args_cli = parser.parse_args()
-args_cli.headless = True
+sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
 
-launcher = AppLauncher(args_cli)
-app = launcher.app
+from isaacsim import SimulationApp
+simulation_app = SimulationApp({
+    "headless": True,
+    "experience": "/home/linux/isaac_env/lib/python3.11/site-packages/isaacsim/apps/isaacsim.exp.full.kit",
+})
 
-from pxr import Usd, Sdf
+import omni.usd
 
-USD_PATH = "/home/linux/gyusama-project/isaac_sim/assets/turtlebot3_burger.usd"
-stage = Usd.Stage.Open(USD_PATH)
+USD_PATH = os.path.join(os.path.dirname(__file__), "assets", "ros2-turtlebot.usd")
+omni.usd.get_context().open_stage(USD_PATH)
 
-# ── 전체 Prim 구조 출력 ───────────────────────────────────────────────────────
-print("\n=== Prim 구조 ===")
+for _ in range(10):
+    simulation_app.update()
+
+stage = omni.usd.get_context().get_stage()
+
+print("\n" + "=" * 60)
+print("USD 전체 Prim 구조 (depth <= 3)")
+print("=" * 60)
 for prim in stage.Traverse():
-    depth = len(prim.GetPath().pathString.split("/")) - 2
-    print("  " * depth + str(prim.GetPath()) + " [" + prim.GetTypeName() + "]")
+    path = str(prim.GetPath())
+    depth = path.count("/") - 1
+    if depth <= 3:
+        indent = "  " * depth
+        print(f"{indent}{path}  [{prim.GetTypeName()}]")
 
-# ── defaultPrim 자동 설정 (최상위 Xform prim) ─────────────────────────────────
-root_children = [p for p in stage.GetPseudoRoot().GetChildren()]
-print(f"\n=== 루트 자식 Prim: {[p.GetName() for p in root_children]} ===")
-
-if root_children:
-    default_prim = root_children[0]
-    stage.SetDefaultPrim(default_prim)
-    stage.Save()
-    print(f"[SUCCESS] defaultPrim 설정: {default_prim.GetPath()}")
-
-app.close()
+simulation_app.close()

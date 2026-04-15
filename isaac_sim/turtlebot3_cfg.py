@@ -26,7 +26,7 @@ DYNAMIXEL_XL430_CFG = DCMotorCfg(
     effort_limit=1.4,
     velocity_limit=4.82,     # XL430 최대 속도 (rad/s, 46 RPM)
     stiffness={".*": 0.0},   # 속도 제어 모드 → stiffness=0
-    damping={".*": 0.5},
+    damping={".*": 10.0},    # 속도 제어 충분한 damping (0.5 → 10.0)
 )
 
 # ── TurtleBot3 Burger 로봇 설정 ───────────────────────────────────────────────
@@ -78,14 +78,14 @@ LDS02_LIDAR_CFG = RayCasterCfg(
     prim_path="{ENV_REGEX_NS}/Robot/a__namespace_base_scan",
     mesh_prim_paths=["/World/Ground"],
     pattern_cfg=patterns.LidarPatternCfg(
-        channels=1,
-        vertical_fov_range=(-0.0, 0.0),
+        channels=3,
+        vertical_fov_range=(-30.0, 10.0),   # 아래쪽 스캔 포함 → 바닥 포인트 감지
         horizontal_fov_range=(-180.0, 180.0),
-        horizontal_res=1.0,         # 1° 해상도 → 360 포인트
+        horizontal_res=1.0,                  # 1° 해상도
     ),
     max_distance=3.5,
     drift_range=(-0.005, 0.005),
     offset=RayCasterCfg.OffsetCfg(
-        pos=(0.0, 0.0, 0.18),       # 라이다 마운트 높이
+        pos=(0.0, 0.0, 0.18),
     ),
 )
