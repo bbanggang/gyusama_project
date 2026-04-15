@@ -1,6 +1,7 @@
-# 4주차 진행 보고 — Isaac Sim 환경 구성 및 TurtleBot3 제어 검증
+# 4주차 진행 보고 - Isaac Sim 환경 구성 및 TurtleBot3 제어 검증
 
 > **목표**: TurtleBot3 USD 모델을 Isaac Sim에서 로드하고, 간단한 제어 코드로 물리 시뮬레이션 동작을 검증한다. ROS2 브리지를 통해 `/scan`, `/odom`, `/cmd_vel` 등 핵심 토픽이 정상 발행되는지 확인한다.
+> 
 
 ---
 
@@ -8,18 +9,45 @@
 
 ### 4-1. TurtleBot3 USD 에셋 확보
 
-URDF → USD 직접 변환 대신 NVIDIA 공식 isaac-sim-mobile-robot-rtab-map 레포지터리(`isaac_test`)에서 ROS2 OmniGraph가 내장된 `ros2-turtlebot.usd`를 확보하여 gyusama-project에 복사했다.
+**URDF vs USD**:
 
-```bash
-# isaac_test 레포 클론 및 USD 복사
-cp ~/isaac_test/isaac-sim/ros2-turtlebot.usd \
-   ~/gyusama-project/isaac_sim/assets/ros2-turtlebot.usd
+| 항목 | URDF | USD |
+| --- | --- | --- |
+| 풀네임 | Unified Robot Description Format | Universal Scene Description |
+| 개발 주체 | ROS 커뮤니티 | Pixar (NVIDIA가 로보틱스에 채택) |
+| 목적 | 로봇의 링크·조인트·센서 구조 기술 | 3D 씬 전체(형상, 물리, 조명, 애니메이션 등) 기술 |
+| 표현 범위 | 로봇 단일 개체 | 로봇 + 환경 + 센서 + 데이터 흐름까지 통합 |
+| 확장성 | ROS 생태계 전용 | 렌더링, 물리 엔진, 외부 툴 연동 가능 |
+
+**Isaac Sim에서 USD를 사용하는 이유**:
+
+Isaac Sim은 NVIDIA Omniverse 플랫폼 위에서 동작하며, Omniverse의 기본 씬 포맷이 USD다. URDF는 로봇 구조만 기술할 수 있지만 USD는 로봇, 환경, 조명, 물리 파라미터, 센서, 데이터 흐름 그래프까지 하나의 파일에 통합할 수 있어 Isaac Sim의 시뮬레이션 전체를 단일 파일로 정의하고 재사용할 수 있다.
+
+**OmniGraph**:
+
+OmniGraph는 Isaac Sim에 내장된 노드 기반 데이터 흐름 그래프 시스템이다. 코드 없이 노드를 연결하는 방식으로 센서 데이터를 읽고 가공하여 ROS2 토픽으로 발행하는 파이프라인을 구성할 수 있다.
+
 ```
+카메라 / LiDAR / IMU 센서 (Isaac Sim 내부)
+        ↓
+OmniGraph 노드 (데이터 읽기 → 가공 → 포맷 변환)
+        ↓
+ROS2 토픽 발행 (/scan, /imu, /odom, /tf)
+ROS2 토픽 구독 (/cmd_vel → 모터 제어)
+```
+
+OmniGraph가 USD에 내장되면 씬 로드 시점에 자동으로 노드 그래프가 활성화되어 별도의 Python 코드 없이 ROS2 브리지가 동작한다.
+
+URDF를 Isaac Sim의 변환 툴로 USD로 변환하면 로봇의 형상 + 물리 정보만 담긴다. 따라서 Isaac Sim을 실행해도 `/scan`, `/odom` 등과 같은 토픽은 발행되지 않는다.
+
+이를 해결하려면 Python 스크립트에서 센서 값을 읽어 rclpy로 수동 발행하거나, Isaac Sim GUI에서 OmniGraph를 직접 배선해야 한다. 따라서 이미 OmniGraph가 내장된 USD를 사용하여 씬 로드 시점에 자동으로 ROS2 브리지 노드들이 활성화되게 하였다.
+
+따라서 URDF → USD 직접 변환 대신 NVIDIA 공식 isaac-sim-mobile-robot-rtab-map 레포지터리에서 ROS2 OmniGraph가 내장된 `ros2-turtlebot.usd`를 확보하여 작업 디렉터리에 복사했다.
 
 해당 USD 파일에 내장된 구성 요소:
 
 | 구성 요소 | 내용 |
-|-----------|------|
+| --- | --- |
 | `turtlebot3_burger` | 로봇 형상 + 물리 (바퀴, IMU, LiDAR) |
 | `simple_room` | 기본 제공 실내 환경 (바닥·벽·조명) |
 | OmniGraph 노드 | `/scan`, `/imu`, `/odom`, `/cmd_vel`, `/tf` ROS2 발행 연결 |
@@ -49,11 +77,15 @@ rm -rf ~/isaac_env/.../isaacsim/kit/data/Kit/   # Kit 캐시 삭제
 **핵심 설계 결정**:
 
 | 설정 | 이유 |
-|------|------|
+| --- | --- |
 | `LD_LIBRARY_PATH`에 브리지 경로 추가 | Isaac Sim Python 3.11과 ROS2 Jazzy Python 3.12 버전 충돌 우회 |
 | `VK_ICD_FILENAMES` 설정 | RTX 5070 Ti만 사용, Intel 내장 그래픽 배제 |
 | Kit 캐시 삭제 | 이전 충돌로 손상된 USD 레이어 레지스트리 초기화 |
 | ROS2 미리 source 금지 | `LD_LIBRARY_PATH` 충돌 → segfault 유발 |
+
+**Kit 캐시** : Isaac SIm은 내부적으로 NVIDIA Omniverse Kit 위에서 동작하는데 Kit은 실행 시 USD scene 구성 정보를 캐시로 저장하여 Isaac Sim이 빠르게 scene을 열도록 Kit 캐시를 참조한다.
+
+이전의 비정상 종료로 scene 참조 기록이 꼬일 수 있기 때문에 이를 초기화해서 시작하기 위해 Kit 캐시 삭제를 셸 스크립트에 추가하였다.
 
 ---
 
@@ -61,9 +93,18 @@ rm -rf ~/isaac_env/.../isaacsim/kit/data/Kit/   # Kit 캐시 삭제
 
 `isaacsim.exp.full.kit` 로드 시 `omni.graph.image.core` 확장이 초기화 단계에서 segfault를 일으키는 문제가 발생했다.
 
+**용어 설명 :**
+
+`isaacsim.exp.full.kit`  : 전체 기능 패키지로 Isaac Sim을 실행하기 위한 설정 파일 → 렌더링, 물리, ros2 bridge, 카메라 LiDAR 등 모든 확장을 적용
+
+`omni.graph.image.core` : 카메라 이미지 데이터를 Omnigraph 노드로 처리하는 확장으로 Isaac Sim 내부 카메라 센서 데이터를 토픽으로 발행
+
+segfault(segmentation fault) : 프로그램이 접근하면 안 되는 메모리 주소를 건드렸을 때 OS가 강제로 프로세서를 죽이는 오류
+
 **충돌 위치**:
-```
-libomni.graph.image.core.plugin.so!_M_realloc_insert (hashtable emplace)
+
+```cpp
+libomni.graph.image.core.plugin.so!_M_realloc_insert (hashtable emplace) #_M_realloc_insert에서 메모리 재할당
   ← libomni.kit.exec.core.plugin.so
   ← libomni.usd.so!reopenUsd
 ```
@@ -71,6 +112,10 @@ libomni.graph.image.core.plugin.so!_M_realloc_insert (hashtable emplace)
 **원인**: RTX 5070 Ti (Blackwell 아키텍처, sm_120)에서 `omni.graph.image.core` 확장이 cold-start 시 메모리 재할당 버그 발생. 셰이더 캐시가 있을 때는 우회됐으나, 캐시 삭제 후 재현됨.
 
 **해결**: `SimulationApp` 초기화 전 해당 확장을 제외 목록에 추가.
+
+SimulationApp() : Isaac Sim 실행 함수
+
+SimulationApp()에서 Kit 런타임 시작, .Kit 파일 파싱, 확장 초기화, USD 씬 로드, 시뮬레이션 루프 시작 등이 동작함 → SimulationApp() 함수의 argv인자에서 omni.graph.image.core를 **제외**시키도록 추가
 
 ```python
 import sys
@@ -84,11 +129,62 @@ simulation_app = SimulationApp({
 
 > **영향**: 카메라 이미지 토픽(`/camera/image_raw`) 발행 불가. LiDAR·IMU·Odometry·cmd_vel 토픽은 정상 동작.
 
+**차선 검출을 위한 카메라 데이터 확보 방향 (5주차)**:
+
+`omni.graph.image.core` 제외로 `/camera/image_raw` ROS2 토픽은 발행되지 않지만, Isaac Sim Python API를 통해 카메라 버퍼를 직접 읽는 방식으로 우회한다. ROS2 토픽을 거치지 않고 Isaac Sim이 렌더링한 이미지를 메모리에서 numpy 배열로 직접 가져오기 때문에 해당 확장 없이도 동작한다.
+
+현재 `ros2-turtlebot.usd`에는 카메라 프림이 포함되어 있지 않으므로, 시뮬레이션 실행 시 Python 코드로 카메라를 런타임에 씬에 추가한다. 이때 Sim-to-Real을 고려하여 실제 TurtleBot3에 장착할 카메라의 물리적 위치, 해상도, 초점거리, 센서 크기를 동일하게 설정해야 시뮬레이션에서 학습한 차선 인식 모델이 실제 환경에서도 동작한다.
+
+```python
+import sys
+sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
+
+simulation_app = SimulationApp({...})
+
+from omni.isaac.sensor import Camera
+
+# USD에 카메라 프림 런타임 추가 (실제 장착 위치와 동일하게 설정)
+camera = Camera(
+    prim_path="/World/turtlebot3_burger/base_link/Camera",
+    translation=(0.1, 0.0, 0.15),   # 실제 카메라 장착 위치 (x, y, z)
+    resolution=(640, 480),           # 실제 카메라 해상도와 동일하게
+    frequency=30
+)
+camera.initialize()
+
+# 시뮬레이션 루프 안에서 직접 읽기
+image = camera.get_rgba()   # numpy array (480, 640, 4)
+rgb = image[:, :, :3]       # YOLO 모델 입력으로 직접 사용
+```
+
+| 항목 | ROS2 토픽 방식 | Isaac Sim API 직접 방식 |
+| --- | --- | --- |
+| `omni.graph.image.core` 필요 여부 | 필요 | 불필요 |
+| 데이터 경로 | 센서 → OmniGraph → DDS → Python 구독 | 센서 → numpy 배열 직접 |
+| Isaac Sim 외부 노드와 이미지 공유 | 가능 | 불가 |
+| YOLO 추론 연동 | 별도 ROS2 노드 필요 | Isaac Sim 내부에서 직접 처리 |
+
+차선 인식 학습 데이터 수집과 YOLO 추론은 Isaac Sim 내부에서 완결되므로 API 직접 방식으로 충분하다.
+
 ---
 
 ### 4-4. IsaacLab 기반 제어 검증 (turtlebot3_scene.py)
 
 Isaac Sim 직접 실행 전에 IsaacLab 프레임워크를 통해 TurtleBot3 USD의 물리 파라미터와 제어 인터페이스를 먼저 검증했다.
+
+**IsaacLab vs Isaac Sim**:
+
+IsaacLab은 Isaac Sim과 별도의 실행 프로그램이 아닌, Isaac Sim을 내부적으로 실행하는 로보틱스/강화학습 프레임워크다. Isaac Gym의 후속으로 Isaac Sim 위에 올라가 강화학습, 모방학습, 관절 제어 연구 환경을 제공한다.
+
+| 항목 | Isaac Sim | IsaacLab |
+| --- | --- | --- |
+| 성격 | 시뮬레이터 본체 | Isaac Sim 위의 로보틱스/RL 프레임워크 |
+| 실행 방식 | `SimulationApp()` + `.kit` 파일 | `./isaaclab.sh -p script.py` |
+| 로드하는 확장 범위 | full.kit — 렌더링, ROS2 브리지, 카메라 등 전체 | 최소한의 확장만 로드 |
+| ROS2 브리지 | 포함 | 미포함 |
+| 주 용도 | 시각화, ROS2 연동, 씬 구성 | 강화학습, 모방학습, 관절 제어 검증 |
+
+**이유** : Isaac Sim 실행 환경이 불안정한 상황에서 IsaacLab은 로드하는 확장 범위가 더 적어 `omni.graph.image.core` segfault 발생 구간 자체를 지나지 않는다. ROS2 브리지, 환경변수 충돌 문제를 모두 제거한 상태에서 USD 물리 파라미터만 순수하게 검증할 수 있기 때문에 IsaacLab 프레임워크를 통해 검증을 진행했다.
 
 **작성 파일**: [isaac_sim/turtlebot3_scene.py](../../isaac_sim/turtlebot3_scene.py)
 
@@ -100,13 +196,14 @@ cd ~/IsaacLab
 **검증 결과**:
 
 | 항목 | 결과 |
-|------|------|
+| --- | --- |
 | 휠 조인트 ID | [0, 1] 정상 탐지 |
 | 전진 (wheel_vel = [2.0, 2.0]) | x축 양방향 이동 확인 |
 | 후진 (wheel_vel = [-2.0, -2.0]) | x축 음방향 이동 확인 |
 | LiDAR 유효 포인트 | 720/1080 (벽 감지) |
 
 출력 샘플:
+
 ```
 [Step   50 | t=0.25s | 전진]
   로봇 위치  : x=0.048, y=0.000, z=0.098
@@ -139,10 +236,32 @@ launch_sim.sh                    source /opt/ros/jazzy/setup.bash
           구독: /cmd_vel              teleop_twist_keyboard
 ```
 
+**터미널을 반드시 분리해야 하는 이유**:
+
+Isaac Sim과 native ROS2는 같은 환경변수 공간을 공유하도록 설계되지 않았다. Isaac Sim 실행 터미널에서 `source /opt/ros/jazzy/setup.bash`를 실행하면 아래 문제들이 복합적으로 발생한다.
+
+| 문제 | 원인 | 증상 |
+| --- | --- | --- |
+| `LD_LIBRARY_PATH` 충돌 | Isaac Sim 브리지 라이브러리와 native ROS2 라이브러리 혼재 | segfault |
+| Python 버전 충돌 | Isaac Sim Python 3.11 vs native ROS2 Jazzy Python 3.12 | import 오류, 런타임 크래시 |
+| RMW 구현체 충돌 | Isaac Sim은 `rmw_fastrtps_cpp` 고정, native source 시 덮어씌워짐 | 토픽 미발행, DDS 통신 불가 |
+| 환경변수 누적 오염 | 같은 터미널에서 Isaac Sim 재실행 시 `LD_LIBRARY_PATH`에 경로 중복 누적 | 의도하지 않은 버전의 라이브러리 로드 |
+
+터미널은 각자 독립된 환경변수를 가지기 때문에, 터미널 2에서 native ROS2를 source해도 터미널 1의 Isaac Sim 환경에 영향을 주지 않는다.
+
+conda 같은 가상환경으로 하나의 환경에 통합하는 방법도 있으나 아래 문제로 현실적이지 않다.
+
+| 문제 | 내용 |
+| --- | --- |
+| Python 버전 강제 통일 | conda 환경을 Python 3.11로 고정하면 native ROS2 Jazzy의 모든 패키지를 Python 3.11용으로 소스 빌드해야 함 |
+| 의존성 충돌 | rclpy, rclcpp 등 수십 개 ROS2 패키지의 의존성이 Isaac Sim 패키지와 충돌 가능 |
+| 유지보수 부담 | Isaac Sim 또는 ROS2 업데이트 시 통합 환경 전체를 재구성해야 함 |
+| 공식 미지원 | NVIDIA 공식 문서에서 Isaac Sim 실행 터미널의 ROS2 source를 명시적으로 금지하며 터미널 분리를 권장 |
+
 **제어 시나리오 (control_scenario.py)**:
 
 | 동작 | 시간 | linear.x | angular.z |
-|------|------|----------|-----------|
+| --- | --- | --- | --- |
 | 전진 | 10s | 0.2 | 0.0 |
 | 우회전 | 5s | 0.0 | -0.5 |
 | 전진 | 8s | 0.2 | 0.0 |
@@ -179,7 +298,7 @@ launch_sim.sh                    source /opt/ros/jazzy/setup.bash
 **USD 구성 요소**:
 
 | Prim 경로 | 내용 |
-|-----------|------|
+| --- | --- |
 | `/World/Ground` | 30m × 30m 바닥 (물리 충돌 포함) |
 | `/World/Track/{Top,Bot,Left,Right}` | 아스팔트 색 트랙 표면 |
 | `/World/Markings/*` | 흰색 경계선 + 황색 중앙선 |
@@ -191,37 +310,36 @@ launch_sim.sh                    source /opt/ros/jazzy/setup.bash
 
 ## 2. 완료 기준 확인
 
-- [x] Isaac Sim에서 TurtleBot3 USD 모델 로드 및 시각화 성공
-- [x] 물리 시뮬레이션 — 전진/후진 동작 확인 (IsaacLab)
-- [x] LiDAR 유효 포인트 감지 확인 (720/1080)
-- [x] ROS2 브리지 토픽 발행 구조 구성 (`/scan`, `/imu`, `/odom`, `/cmd_vel`, `/tf`)
-- [x] `control_scenario.py`로 `/cmd_vel` 명령 전송 구조 완성
-- [x] 차선 마킹 트랙 씬 코드 구성 완료 (`run_track_sim.py`)
+- [x]  Isaac Sim에서 TurtleBot3 USD 모델 로드 및 시각화 성공
+- [x]  물리 시뮬레이션 — 전진/후진 동작 확인 (IsaacLab)
+- [x]  LiDAR 유효 포인트 감지 확인 (720/1080)
+- [x]  ROS2 브리지 토픽 발행 구조 구성 (`/scan`, `/imu`, `/odom`, `/cmd_vel`, `/tf`)
+- [x]  `control_scenario.py`로 `/cmd_vel` 명령 전송 구조 완성
+- [x]  차선 마킹 트랙 씬 코드 구성 완료 (`run_track_sim.py`)
 
 ---
 
 ## 3. 주의사항
 
 ### Isaac Sim 실행 전 ROS2 source 금지
+
 - `source /opt/ros/jazzy/setup.bash`를 Isaac Sim 실행 터미널에서 하면 `LD_LIBRARY_PATH`가 오염되어 segfault가 발생한다.
 - Isaac Sim 터미널과 ROS2 제어 터미널을 반드시 분리해서 사용한다.
 
 ### omni.graph.image.core 확장 제외 필수 (RTX 5070 Ti)
+
 - RTX 5070 Ti (Blackwell, sm_120)에서 `isaacsim.exp.full.kit` cold-start 시 해당 확장이 충돌한다.
 - 모든 Isaac Sim Python 스크립트의 `SimulationApp` 초기화 전에 아래 코드를 추가해야 한다.
-  ```python
-  import sys
-  sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
-  ```
+    
+    ```python
+    import sys
+    sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
+    ```
+    
 - 제외 시 `/camera/image_raw` 토픽은 발행되지 않는다. (5주차 카메라 연동 시 별도 해결 필요)
 
 ### 셰이더 캐시 삭제 주의
+
 - `~/.local/share/ov/cache/`는 Isaac Sim 셰이더 컴파일 캐시다. 삭제하면 첫 실행 시 10~20분이 소요되거나 cold-start 충돌이 재현된다.
 - `launch_sim.sh`에서는 Kit 데이터 캐시(`isaacsim/kit/data/Kit/`)만 삭제하고, OV 셰이더 캐시는 건드리지 않는다.
 
-### IsaacLab vs SimulationApp 선택 기준
-
-| 용도 | 권장 방식 |
-|------|-----------|
-| 물리 파라미터 검증, 관절 제어 | IsaacLab (`./isaaclab.sh -p script.py`) |
-| ROS2 토픽 발행 (브리지 포함) | SimulationApp + `launch_sim.sh` |
