@@ -9,6 +9,10 @@
 
 ### 4-1. TurtleBot3 USD 에셋 확보
 
+> **문제**: URDF → USD 직접 변환 시 형상·물리 정보만 담겨 Isaac Sim 실행 후에도 `/scan`, `/odom` 등 ROS2 토픽이 발행되지 않음
+> **해결**: OmniGraph(ROS2 브리지 노드 그래프)가 내장된 NVIDIA 공식 USD 확보
+> **결과**: 씬 로드 시점에 `/scan`, `/imu`, `/odom`, `/cmd_vel`, `/tf` 토픽이 자동 활성화
+
 **URDF vs USD**:
 
 | 항목 | URDF | USD |
@@ -56,6 +60,10 @@ URDF를 Isaac Sim의 변환 툴로 USD로 변환하면 로봇의 형상 + 물리
 
 ### 4-2. Isaac Sim 실행 스크립트 작성
 
+> **문제**: Isaac Sim Python 3.11과 ROS2 Jazzy Python 3.12 버전 충돌, Intel 내장 그래픽 간섭, 비정상 종료로 인한 Kit 캐시 손상으로 Isaac Sim 실행 자체가 불안정
+> **해결**: 충돌 원인별로 필요한 환경변수만 선별하여 단일 셸 스크립트로 통합
+> **결과**: 환경변수 충돌 없이 Isaac Sim 안정적 실행 가능
+
 Isaac Sim 실행에 필요한 환경 변수 설정과 ROS2 브리지 경로를 통합한 셸 스크립트를 작성했다.
 
 **작성 파일**: [isaac_sim/launch_sim.sh](../../isaac_sim/launch_sim.sh)
@@ -90,6 +98,10 @@ rm -rf ~/isaac_env/.../isaacsim/kit/data/Kit/   # Kit 캐시 삭제
 ---
 
 ### 4-3. RTX 5070 Ti Blackwell GPU 충돌 문제 해결
+
+> **문제**: RTX 5070 Ti (Blackwell, sm_120)에서 `omni.graph.image.core` 확장이 cold-start 시 메모리 재할당 버그로 segfault 발생 → Isaac Sim 실행 불가
+> **해결**: `SimulationApp` 초기화 전 해당 확장을 제외 목록에 추가
+> **결과**: Isaac Sim 정상 실행. 단, `/camera/image_raw` 토픽 발행 불가 → 5주차에 Isaac Sim Python API 직접 접근 방식으로 우회 예정
 
 `isaacsim.exp.full.kit` 로드 시 `omni.graph.image.core` 확장이 초기화 단계에서 segfault를 일으키는 문제가 발생했다.
 
@@ -170,6 +182,10 @@ rgb = image[:, :, :3]       # YOLO 모델 입력으로 직접 사용
 
 ### 4-4. IsaacLab 기반 제어 검증 (turtlebot3_scene.py)
 
+> **문제**: Isaac Sim 실행 환경이 불안정한 상태에서 USD 물리 파라미터까지 동시에 검증하면 문제 발생 시 USD 자체의 문제인지 실행 환경 문제인지 원인 특정 불가
+> **해결**: 최소 확장만 로드하는 IsaacLab으로 ROS2 브리지·환경변수 충돌 변수를 제거한 뒤 USD 물리만 격리하여 검증
+> **결과**: 휠 조인트 ID, 전진/후진 동작, LiDAR 포인트 정상 확인 → USD 자체는 정상임을 보장, 이후 문제 발생 시 디버깅 범위 축소
+
 Isaac Sim 직접 실행 전에 IsaacLab 프레임워크를 통해 TurtleBot3 USD의 물리 파라미터와 제어 인터페이스를 먼저 검증했다.
 
 **IsaacLab vs Isaac Sim**:
@@ -214,6 +230,10 @@ cd ~/IsaacLab
 ---
 
 ### 4-5. ROS2 브리지 연동 시뮬레이션 (run_ros2_sim.py)
+
+> **문제**: Isaac Sim과 native ROS2를 같은 터미널에서 실행 시 Python 버전 충돌, LD_LIBRARY_PATH 오염 등으로 segfault 발생
+> **해결**: Isaac Sim 전용 터미널과 ROS2 제어 터미널을 분리하여 환경변수 충돌 원천 차단
+> **결과**: `/scan`, `/imu`, `/odom`, `/tf` 토픽 발행 및 `/cmd_vel` 수신 정상 동작 확인
 
 별도 제어 터미널과 Isaac Sim이 ROS2 토픽으로 통신하는 구조를 구성했다.
 
