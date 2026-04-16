@@ -5,13 +5,16 @@ ros2-turtlebot-robot-only.usd (로봇 + ROS2 OmniGraph)를 로드하고
 직사각형 루프 트랙 월드를 코드로 구성합니다.
 
 트랙 구조:
-  외부: 10m x 7m  /  내부 공터: 7m x 4m  /  트랙 폭: 1.5m
+  외부: 10m x 6m  /  내부 공터: 7m x 3m  /  트랙 폭: 1.5m
+  로봇 시작 위치 (0.06, -1.87) → 하단 직선 위
   마킹: 흰색(외/내 경계선) + 황색(중앙선)
   벽  : 외부 4면 + 내부 4면 (LiDAR 감지)
 
+  바닥: AddGroundPlaneCommand (PhysX 무한 평면) — 박스 슬랩 대신 사용
+        로봇이 z=-0.712에 묻혀도 물리 평면이 z=0으로 올려줌
+
 실행:
-    ~/gyusama-project/isaac_sim/launch_sim.sh track
-    또는 launch_sim.sh 마지막 줄을 run_track_sim.py 로 변경
+    ~/gyusama-project/isaac_sim/launch_sim.sh
 """
 import os
 import sys
@@ -25,6 +28,7 @@ simulation_app = SimulationApp({
 })
 
 import omni.usd
+import omni.kit.commands
 import omni.timeline
 from pxr import UsdGeom, UsdLux, UsdPhysics, UsdShade, Gf, Sdf
 
@@ -79,36 +83,37 @@ def build_track_scene():
 
     # 색상
     ASPHALT = (0.13, 0.13, 0.13)
-    GROUND  = (0.28, 0.28, 0.28)
     WHITE   = (1.00, 1.00, 1.00)
     YELLOW  = (0.95, 0.85, 0.00)
     WALL_C  = (0.55, 0.55, 0.55)
 
-    # 트랙 치수
+    # ── 트랙 치수 ─────────────────────────────────────────────────────────────
+    # 로봇 원본 위치: (0.06, -1.87, -0.712)
+    # y=-1.87 이 하단 직선 위(y: -3.0 ~ -1.5)에 들어오도록 OY=3.0 으로 설정
     OX = 5.0   # 외부 반폭 x  → 전체 10m
-    OY = 3.5   # 외부 반폭 y  → 전체 7m
+    OY = 3.0   # 외부 반폭 y  → 전체  6m
     TW = 1.5   # 트랙 폭
     IX = OX - TW   # 내부 반폭 x = 3.5
-    IY = OY - TW   # 내부 반폭 y = 2.0
+    IY = OY - TW   # 내부 반폭 y = 1.5
+    # 하단 직선: y = -(OY-TW/2) ± TW/2 = -2.25 ± 0.75 → y: -3.0 ~ -1.5
+    # 로봇(y=-1.87) → 하단 직선 중앙 근방 ✓
 
     # ── 1) Physics Scene ──────────────────────────────────────────────────────
     phys = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
     phys.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
     phys.CreateGravityMagnitudeAttr(9.81)
 
-    # ── 2) 바닥 (마찰 재질 포함) ──────────────────────────────────────────────
-    _slab(stage, "/World/Ground", 0, 0, -0.025, 30, 30, 0.05, GROUND, mat_cache, physics=True)
-
-    # 바닥 마찰 재질 — 바퀴가 헛돌지 않도록 staticFriction, dynamicFriction 설정
-    from pxr import PhysxSchema
-    ground_prim = stage.GetPrimAtPath("/World/Ground")
-    phys_mat = UsdShade.Material.Define(stage, "/World/GroundPhysicsMaterial")
-    phys_mat_prim = phys_mat.GetPrim()
-    UsdPhysics.MaterialAPI.Apply(phys_mat_prim).CreateStaticFrictionAttr(0.7)
-    UsdPhysics.MaterialAPI.Apply(phys_mat_prim).CreateDynamicFrictionAttr(0.5)
-    UsdPhysics.MaterialAPI.Apply(phys_mat_prim).CreateRestitutionAttr(0.0)
-    UsdShade.MaterialBindingAPI.Apply(ground_prim).Bind(
-        phys_mat, UsdShade.Tokens.weakerThanDescendants, "physics"
+    # ── 2) 바닥: AddGroundPlaneCommand (PhysX 무한 평면) ─────────────────────
+    # 커스텀 박스 슬랩은 로봇(z=-0.712)이 슬랩 내부에 박혀 물리 폭발을 유발함.
+    # 무한 평면은 로봇을 자동으로 z=0 위로 밀어올리므로 안정적.
+    omni.kit.commands.execute(
+        "AddGroundPlaneCommand",
+        stage=stage,
+        planePath="/World/GroundPlane",
+        axis="Z",
+        size=30.0,
+        position=Gf.Vec3f(0.0, 0.0, 0.0),
+        color=Gf.Vec3f(0.28, 0.28, 0.28),
     )
 
     # ── 3) 조명 ───────────────────────────────────────────────────────────────
@@ -123,18 +128,19 @@ def build_track_scene():
     UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 6.0))
     UsdGeom.XformCommonAPI(rect).SetRotate(Gf.Vec3f(-90, 0, 0))
 
-    # ── 4) 트랙 표면 ─────────────────────────────────────────────────────────
+    # ── 4) 트랙 표면 (시각용, 물리 없음) ─────────────────────────────────────
     #
-    #   ┌────────────── Top ───────────────┐  y = +2.0 ~ +3.5
-    #   L                                  R
-    #   e  (공터: 7m x 4m)                 i
-    #   f                                  g
-    #   t                                  h
-    #                                      t
-    #   └────────────── Bot ───────────────┘  y = -3.5 ~ -2.0
+    #   ┌──────────── Top ─────────────┐  y = +1.5 ~ +3.0
+    #   L                              R
+    #   e   (공터: 7m x 3m)            i
+    #   f                              g
+    #   t                              h
+    #                                  t
+    #   └──────────── Bot ─────────────┘  y = -3.0 ~ -1.5
+    #                ↑ 로봇 (y≈-1.87)
     #
     UsdGeom.Scope.Define(stage, "/World/Track")
-    TZ, TH = 0.003, 0.004
+    TZ, TH = 0.003, 0.004   # 시각용 슬랩 — 물리 없음
 
     for name, cx, cy, sx, sy in [
         ("Top",   0,            OY - TW/2,  OX*2, TW  ),
@@ -144,14 +150,13 @@ def build_track_scene():
     ]:
         _slab(stage, f"/World/Track/{name}", cx, cy, TZ, sx, sy, TH, ASPHALT, mat_cache)
 
-    # ── 5) 차선 마킹 ─────────────────────────────────────────────────────────
-    #   각 직선 3선: 외부 흰선 / 황색 중앙선 / 내부 흰선
+    # ── 5) 차선 마킹 (시각용, 물리 없음) ─────────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Markings")
     MZ, MH  = 0.007, 0.002
     LW      = 0.07
-    EDGE    = TW/2 - 0.07   # 트랙 중심에서 경계선까지 오프셋
+    EDGE    = TW/2 - 0.07
 
-    # 상/하 직선 (x 방향 선)
+    # 상/하 직선
     yc = OY - TW/2
     for seg, y_sign in [("Top", +1), ("Bot", -1)]:
         yp = y_sign * yc
@@ -163,7 +168,7 @@ def build_track_scene():
             _slab(stage, f"/World/Markings/{seg}_{mname}",
                   0, yp + y_off, MZ, OX*2, LW, MH, color, mat_cache)
 
-    # 좌/우 직선 (y 방향 선)
+    # 좌/우 직선
     xc = OX - TW/2
     for seg, x_sign in [("Left", -1), ("Right", +1)]:
         xp = x_sign * xc
@@ -195,44 +200,16 @@ def build_track_scene():
               WALL_C, mat_cache, physics=True)
 
     print("[INFO] 트랙 씬 구성 완료")
-    print("  크기  : 외부 10m x 7m  /  트랙 폭 1.5m  /  내부 공터 7m x 4m")
+    print("  크기  : 외부 10m x 6m  /  트랙 폭 1.5m  /  내부 공터 7m x 3m")
+    print("  바닥  : AddGroundPlaneCommand (PhysX 무한 평면)")
     print("  마킹  : 흰색(외·내 경계선) + 황색(중앙선)")
     print("  벽    : 외부 4면 + 내부 4면 (높이 0.3m)")
+    print("  로봇  : (0.06, -1.87) → 하단 직선 위 (재배치 없음)")
 
 
 build_track_scene()
 for _ in range(10):
     simulation_app.update()
-
-
-# ── 로봇 위치: 트랙 상단 직선 중앙에 배치 ────────────────────────────────────
-def reposition_robot():
-    stage = omni.usd.get_context().get_stage()
-    # turtlebot3_burger 자체 xform 수정
-    # 원본: translate=(0.06, -1.87, -0.712) — simple_room 바닥 기준으로 z가 지하에 묻혀 있음
-    robot_path = "/World/turtlebot_tutorial_multi_sensor_publish_rates/turtlebot3_burger"
-    prim = stage.GetPrimAtPath(robot_path)
-
-    if not prim.IsValid():
-        print(f"[WARN] 로봇 prim 없음: {robot_path}")
-        return
-
-    # ClearXformOpOrder() + AddTranslateOp() 조합은 USD 시각 위치와 물리 엔진 body 위치가
-    # 불일치하여 teleop 명령 시 바퀴는 돌지만 로봇이 이동하지 않는 문제를 유발한다.
-    # 기존 xformOp:translate 속성을 직접 수정하면 물리 엔진이 동일 속성을 참조하므로
-    # 시각·물리 위치가 동기화된 채로 teleport된다.
-    translate_attr = prim.GetAttribute("xformOp:translate")
-    if translate_attr.IsValid():
-        orig = translate_attr.Get()
-        # x는 원본 유지(0.06), y=2.75(트랙 상단 직선 중앙), z=0.0(바닥면)
-        translate_attr.Set(Gf.Vec3d(orig[0], 2.75, 0.0))
-        print(f"[INFO] 로봇 위치 수정: ({orig[0]:.3f}, {orig[1]:.3f}, {orig[2]:.3f}) → ({orig[0]:.3f}, 2.75, 0.0)")
-    else:
-        # 속성이 없으면 XformOp으로 새로 추가
-        xformable = UsdGeom.Xformable(prim)
-        op = xformable.AddTranslateOp()
-        op.Set(Gf.Vec3d(0.06, 2.75, 0.0))
-        print(f"[INFO] 로봇 translate op 추가 → (0.06, 2.75, 0.0)")
 
 
 # ── 카메라: 트랙 전체가 보이는 3/4 뷰 ───────────────────────────────────────
@@ -247,14 +224,13 @@ def setup_camera():
         cam_prim = stage.GetPrimAtPath(cam_path)
         if cam_prim.IsValid():
             xf = UsdGeom.XformCommonAPI(cam_prim)
-            xf.SetTranslate(Gf.Vec3d(0.0, -14.0, 13.0))  # 남쪽 뒤에서 위로
-            xf.SetRotate(Gf.Vec3f(-45.0, 0.0, 0.0))       # 45° 내려봄
-            print("[INFO] 카메라 설정 완료: (0, -14, 13) → 트랙 전체 조망")
+            xf.SetTranslate(Gf.Vec3d(0.0, -12.0, 11.0))
+            xf.SetRotate(Gf.Vec3f(-45.0, 0.0, 0.0))
+            print("[INFO] 카메라 설정 완료: (0, -12, 11) → 트랙 전체 조망")
     except Exception as e:
         print(f"[WARN] 카메라 설정 실패: {e}")
 
 
-reposition_robot()
 setup_camera()
 for _ in range(5):
     simulation_app.update()
