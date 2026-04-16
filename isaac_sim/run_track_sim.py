@@ -96,8 +96,20 @@ def build_track_scene():
     phys.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
     phys.CreateGravityMagnitudeAttr(9.81)
 
-    # ── 2) 바닥 ───────────────────────────────────────────────────────────────
+    # ── 2) 바닥 (마찰 재질 포함) ──────────────────────────────────────────────
     _slab(stage, "/World/Ground", 0, 0, -0.025, 30, 30, 0.05, GROUND, mat_cache, physics=True)
+
+    # 바닥 마찰 재질 — 바퀴가 헛돌지 않도록 staticFriction, dynamicFriction 설정
+    from pxr import PhysxSchema
+    ground_prim = stage.GetPrimAtPath("/World/Ground")
+    phys_mat = UsdShade.Material.Define(stage, "/World/GroundPhysicsMaterial")
+    phys_mat_prim = phys_mat.GetPrim()
+    UsdPhysics.MaterialAPI.Apply(phys_mat_prim).CreateStaticFrictionAttr(0.7)
+    UsdPhysics.MaterialAPI.Apply(phys_mat_prim).CreateDynamicFrictionAttr(0.5)
+    UsdPhysics.MaterialAPI.Apply(phys_mat_prim).CreateRestitutionAttr(0.0)
+    UsdShade.MaterialBindingAPI.Apply(ground_prim).Bind(
+        phys_mat, UsdShade.Tokens.weakerThanDescendants, "physics"
+    )
 
     # ── 3) 조명 ───────────────────────────────────────────────────────────────
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
@@ -196,21 +208,31 @@ for _ in range(10):
 # ── 로봇 위치: 트랙 상단 직선 중앙에 배치 ────────────────────────────────────
 def reposition_robot():
     stage = omni.usd.get_context().get_stage()
-    # 부모 Xform 아래에 로봇이 있으므로 부모 위치를 이동
-    parent_path = "/World/turtlebot_tutorial_multi_sensor_publish_rates"
-    robot_path  = parent_path + "/turtlebot3_burger"
+    # turtlebot3_burger 자체 xform 수정
+    # 원본: translate=(0.06, -1.87, -0.712) — simple_room 바닥 기준으로 z가 지하에 묻혀 있음
+    robot_path = "/World/turtlebot_tutorial_multi_sensor_publish_rates/turtlebot3_burger"
+    prim = stage.GetPrimAtPath(robot_path)
 
-    # 부모 prim 위치 설정 (상단 직선 중앙, 동쪽 방향)
-    target_path = robot_path if stage.GetPrimAtPath(robot_path).IsValid() else parent_path
-    prim = stage.GetPrimAtPath(target_path)
-    if prim.IsValid():
-        xf = UsdGeom.XformCommonAPI(prim)
-        # 상단 직선 (y≈2.75) 에 배치, z=0.05 (지면 위)
-        xf.SetTranslate(Gf.Vec3d(0.0, 2.75, 0.05))
-        xf.SetRotate(Gf.Vec3f(0.0, 0.0, 0.0))   # +X 방향
-        print(f"[INFO] 로봇 위치 설정 → (0.0, 2.75, 0.05)  경로: {target_path}")
+    if not prim.IsValid():
+        print(f"[WARN] 로봇 prim 없음: {robot_path}")
+        return
+
+    # ClearXformOpOrder() + AddTranslateOp() 조합은 USD 시각 위치와 물리 엔진 body 위치가
+    # 불일치하여 teleop 명령 시 바퀴는 돌지만 로봇이 이동하지 않는 문제를 유발한다.
+    # 기존 xformOp:translate 속성을 직접 수정하면 물리 엔진이 동일 속성을 참조하므로
+    # 시각·물리 위치가 동기화된 채로 teleport된다.
+    translate_attr = prim.GetAttribute("xformOp:translate")
+    if translate_attr.IsValid():
+        orig = translate_attr.Get()
+        # x는 원본 유지(0.06), y=2.75(트랙 상단 직선 중앙), z=0.0(바닥면)
+        translate_attr.Set(Gf.Vec3d(orig[0], 2.75, 0.0))
+        print(f"[INFO] 로봇 위치 수정: ({orig[0]:.3f}, {orig[1]:.3f}, {orig[2]:.3f}) → ({orig[0]:.3f}, 2.75, 0.0)")
     else:
-        print("[WARN] 로봇 prim을 찾을 수 없음 — USD 구조를 확인하세요")
+        # 속성이 없으면 XformOp으로 새로 추가
+        xformable = UsdGeom.Xformable(prim)
+        op = xformable.AddTranslateOp()
+        op.Set(Gf.Vec3d(0.06, 2.75, 0.0))
+        print(f"[INFO] 로봇 translate op 추가 → (0.06, 2.75, 0.0)")
 
 
 # ── 카메라: 트랙 전체가 보이는 3/4 뷰 ───────────────────────────────────────
