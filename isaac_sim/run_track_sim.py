@@ -1,18 +1,18 @@
 """
-gyusama-project — TurtleBot3 AutoRace 스타일 2차선 트랙
+gyusama-project — TurtleBot3 AutoRace 스타일 복잡 루프 트랙
 
-트랙 구조 (TurtleBot3 AutoRace 기반):
-  외부: 10m × 5m  /  트랙 폭: 1.0m (2차선, 각 ~0.45m)
-  마킹: 흰색 경계선(외·내) + 황색 중앙선 → 카메라 차선 검출용
-  건설 구간(Construction Zone): 상단 직선 외측 차선 오렌지 콘 5개 → 차선 변경 유도
-  벽 : 외부 4면 + 내부 4면 (LiDAR 감지 + 충돌)
-  바닥: AddGroundPlaneCommand (PhysX 무한 평면)
+Gazebo AutoRace 트랙을 참고한 불규칙 루프 구조:
+  하단 직선(8m) → 우측(3m) → 상단 우측(2.5m) → 내부 우측 수직(2m)
+  → 상단 중앙(3m, 건설 구간) → 내부 좌측 수직(2m) → 상단 좌측(2.5m)
+  → 좌측(3m) → 하단으로 복귀
 
-  로봇 원본 위치 (0.06, -1.87, -0.712):
-    하단 직선 중심(y=-2.0) 근방 → 재배치 없이 물리 평면이 z=0 으로 자동 올림
+  내부 공터: H 자 형태 (로봇이 H 외곽 트랙 위를 달림)
+  2차선: 황색 중앙선 + 흰색 경계선 (카메라 차선 검출용)
+  건설 구간(Construction Zone): 상단 중앙 외측 차선 오렌지 콘 3개
 
-실행:
-    ~/gyusama-project/isaac_sim/launch_sim.sh
+  로봇 시작: 하단 직선 (y≈-1.87, AddGroundPlaneCommand 가 z=0 자동 배치)
+
+실행: ~/gyusama-project/isaac_sim/launch_sim.sh
 """
 import os
 import sys
@@ -59,7 +59,7 @@ def _bind_color(stage, prim, color, mat_cache):
 
 
 def _slab(stage, path, cx, cy, cz, sx, sy, sz, color, mat_cache, physics=False):
-    """직사각형 슬랩 — 트랙 표면·마킹·벽·콘 공용"""
+    """직사각형 슬랩 공용 함수 (트랙·마킹·벽·콘)"""
     cube = UsdGeom.Cube.Define(stage, path)
     cube.CreateSizeAttr(1.0)
     api = UsdGeom.XformCommonAPI(cube)
@@ -79,28 +79,48 @@ def build_track_scene():
     mat_cache = {}
     UsdGeom.Scope.Define(stage, "/World/Materials")
 
-    # ── 색상 (카메라 차선 검출 대비 최대화)
-    ASPHALT = (0.10, 0.10, 0.10)   # 짙은 아스팔트
-    WHITE   = (1.00, 1.00, 1.00)   # 경계선
-    YELLOW  = (0.95, 0.85, 0.00)   # 중앙 분리선
-    ORANGE  = (1.00, 0.38, 0.00)   # 건설 구간 콘
-    WALL_C  = (0.55, 0.55, 0.55)   # 외/내 벽
+    # ── 색상 (카메라 대비 최대화)
+    ASPHALT = (0.09, 0.09, 0.09)
+    WHITE   = (1.00, 1.00, 1.00)
+    YELLOW  = (0.95, 0.85, 0.00)
+    ORANGE  = (1.00, 0.38, 0.00)
+    WALL_C  = (0.50, 0.50, 0.50)
 
-    # ── 트랙 치수
-    # 로봇 원본 y = -1.87 → 하단 직선(y: -2.5 ~ -1.5) 내에 위치
-    OX  = 5.0    # 외부 반폭 x  → 전체 10m
-    OY  = 2.5    # 외부 반폭 y  → 전체  5m
-    TW  = 1.0    # 트랙 폭 (2차선 합계)
-    IX  = OX - TW          # 내부 반폭 x = 4.0
-    IY  = OY - TW          # 내부 반폭 y = 1.5
-    LW  = 0.05             # 차선 마킹 폭 (5 cm — AutoRace 테이프 너비)
-    EDGE_OFF = TW/2 - LW/2 # 트랙 중심 → 경계선 중심 오프셋 = 0.475 m
+    # ── 핵심 치수
+    TW      = 1.0          # 트랙 폭 (2차선)
+    LW      = 0.05         # 마킹 라인 폭
+    EDGE    = TW/2 - LW/2  # 트랙 중심 → 경계선 중심 오프셋 = 0.475
+    TZ, TH  = 0.005, 0.003 # 트랙 표면 z 중심 / 두께
+    MZ, MH  = 0.009, 0.002 # 마킹 z 중심 / 두께
+    WH, WT, WZ = 0.30, 0.10, 0.15  # 벽 높이 / 두께 / z 중심
 
-    # 각 직선 중심 좌표
-    BOT_CY = -(OY - TW/2)   # 하단 y = -2.0  (로봇 y=-1.87 ✓)
-    TOP_CY =  (OY - TW/2)   # 상단 y = +2.0
-    LFT_CX = -(OX - TW/2)   # 좌측 x = -4.5
-    RGT_CX =  (OX - TW/2)   # 우측 x = +4.5
+    # ── 트랙 세그먼트 정의 ────────────────────────────────────────────────────
+    #
+    # AutoRace 참고 복잡 루프 (로봇 원본 위치 y≈-1.87 → 하단 직선 포함):
+    #
+    #   OutW    OutTopL      OutN       OutTopR   OutE
+    #    │  ┌──────────┐  ┌──────┐  ┌──────────┐  │
+    #    │  │ ULH      │  │ Top  │  │ URH      │  │
+    #    │  │ (2.5m)   │  │(3m)  │  │ (2.5m)   │  │
+    #    │  └──┐  InMidW│  │InN  │ InMidE┌──┘  │
+    #    │Left │  ILV   │  │     │   IRV │     │ Right
+    #    │(3m) │  (2m)  │  │     │  (2m) │     │ (3m)
+    #    │  ┌──┘  InTopW│  │InS  │ InTopE└──┐  │
+    #    │  │          InW   InE          │  │
+    #    │  └─────────────────────────────┘  │
+    #    │           InS (7m)                 │
+    #    │  ══════════════ Bot (8m) ═══════   │  ← 로봇(y≈-1.87)
+    #   OutS ─────────────────────────────── OutS
+    #
+    # 세그먼트 중심 좌표 (cx, cy) 및 크기 (sx, sy):
+    #   Bot    : (0,    -2.0), sx=9.0, sy=TW   ← 하단(로봇 시작)
+    #   Right  : (4.0,  -0.5), sx=TW,  sy=4.0  ← 우측
+    #   URH    : (2.75,  1.0), sx=2.5, sy=TW   ← 상단 우측 수평
+    #   IRV    : (1.5,   2.0), sx=TW,  sy=2.0  ← 내부 우측 수직
+    #   Top    : (0,     3.0), sx=3.0, sy=TW   ← 상단 중앙 (건설 구간)
+    #   ILV    : (-1.5,  2.0), sx=TW,  sy=2.0  ← 내부 좌측 수직
+    #   ULH    : (-2.75, 1.0), sx=2.5, sy=TW   ← 상단 좌측 수평
+    #   Left   : (-4.0, -0.5), sx=TW,  sy=4.0  ← 좌측
 
     # ── 1) Physics Scene
     phys = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
@@ -108,134 +128,160 @@ def build_track_scene():
     phys.CreateGravityMagnitudeAttr(9.81)
 
     # ── 2) 바닥 — AddGroundPlaneCommand (PhysX 무한 평면)
-    # 커스텀 박스 슬랩은 로봇(z=-0.712)이 슬랩 안에 박혀 물리 폭발을 유발함
-    # 무한 평면은 로봇을 자동으로 z=0 위로 올려주므로 안전
     omni.kit.commands.execute(
         "AddGroundPlaneCommand",
         stage=stage, planePath="/World/GroundPlane",
         axis="Z", size=30.0,
         position=Gf.Vec3f(0.0, 0.0, 0.0),
-        color=Gf.Vec3f(0.22, 0.22, 0.22),
+        color=Gf.Vec3f(0.20, 0.20, 0.20),
     )
 
     # ── 3) 조명
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-    dome.CreateIntensityAttr(600.0)
+    dome.CreateIntensityAttr(700.0)
     dome.CreateColorAttr(Gf.Vec3f(0.95, 0.95, 1.0))
 
     rect = UsdLux.RectLight.Define(stage, "/World/RectLight")
-    rect.CreateIntensityAttr(30000.0)
-    rect.CreateWidthAttr(12.0)
-    rect.CreateHeightAttr(8.0)
-    UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 6.0))
+    rect.CreateIntensityAttr(35000.0)
+    rect.CreateWidthAttr(14.0)
+    rect.CreateHeightAttr(10.0)
+    UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0.5, 7.0))
     UsdGeom.XformCommonAPI(rect).SetRotate(Gf.Vec3f(-90, 0, 0))
 
-    # ── 4) 트랙 표면 — 아스팔트 (시각용, 물리 없음)
-    #
-    #  OutN ─────────────────────────── OutN
-    #  │  ══════ Top ══════             │
-    #  │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  (중앙선)│
-    #  │  ══════════════════════        │
-    #  InN ────────────────────── InN  │
-    #  ║  (공터 8m×3m)            ║    │
-    #  InS ────────────────────── InS  │
-    #  │  ══════════════════════        │
-    #  │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  (중앙선)│
-    #  │  ══════ Bot ══════  ← 로봇 시작│
-    #  OutS ─────────────────────────── OutS
-    #
+    # ── 4) 트랙 표면 (시각용, 물리 없음) ─────────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Track")
-    TZ, TH = 0.005, 0.003  # 시각 슬랩 z 중심 / 두께
 
-    for name, cx, cy, sx, sy in [
-        ("Top",   0,      TOP_CY, OX*2, TW  ),
-        ("Bot",   0,      BOT_CY, OX*2, TW  ),
-        ("Left",  LFT_CX, 0,      TW,   IY*2),
-        ("Right", RGT_CX, 0,      TW,   IY*2),
-    ]:
+    segs = [
+        ("Bot",   0.0,   -2.0, 9.0, TW ),
+        ("Right", 4.0,   -0.5, TW,  4.0),
+        ("URH",   2.75,   1.0, 2.5, TW ),
+        ("IRV",   1.5,    2.0, TW,  2.0),
+        ("Top",   0.0,    3.0, 3.0, TW ),
+        ("ILV",  -1.5,    2.0, TW,  2.0),
+        ("ULH",  -2.75,   1.0, 2.5, TW ),
+        ("Left", -4.0,   -0.5, TW,  4.0),
+    ]
+    for name, cx, cy, sx, sy in segs:
         _slab(stage, f"/World/Track/{name}", cx, cy, TZ, sx, sy, TH, ASPHALT, mat_cache)
 
-    # ── 5) 2차선 마킹 (시각용, 물리 없음)
-    # 구조: [외측 흰선 5cm] [외측 차선 ~0.45m] [황색 중앙선 5cm] [내측 차선 ~0.45m] [내측 흰선 5cm]
+    # 코너 패치 (방향 전환 지점 이음새 채우기)
+    corners = [
+        ("CornerSE",  4.0,  -2.0),
+        ("CornerE",   4.0,   1.0),
+        ("CornerURH", 1.5,   1.0),
+        ("CornerNE",  1.5,   3.0),
+        ("CornerNW", -1.5,   3.0),
+        ("CornerULH",-1.5,   1.0),
+        ("CornerW",  -4.0,   1.0),
+        ("CornerSW", -4.0,  -2.0),
+    ]
+    for name, cx, cy in corners:
+        _slab(stage, f"/World/Track/{name}", cx, cy, TZ, TW, TW, TH, ASPHALT, mat_cache)
+
+    # ── 5) 2차선 마킹 (시각용, 물리 없음) ─────────────────────────────────────
+    # 구조: 외측흰선(5cm) │ 외측 차선(~0.45m) │ 황색중앙선(5cm) │ 내측 차선(~0.45m) │ 내측흰선(5cm)
     UsdGeom.Scope.Define(stage, "/World/Markings")
-    MZ, MH = 0.009, 0.002
 
-    # 상/하 직선 마킹 (x 방향 선)
-    for seg, cy, y_sign in [("Top", TOP_CY, +1), ("Bot", BOT_CY, -1)]:
-        for mname, y_off, color in [
-            ("Out",  y_sign * EDGE_OFF,  WHITE ),
-            ("Ctr",  0.0,                YELLOW),
-            ("In",   y_sign * -EDGE_OFF, WHITE ),
-        ]:
-            _slab(stage, f"/World/Markings/{seg}_{mname}",
-                  0, cy + y_off, MZ, OX*2, LW, MH, color, mat_cache)
+    # (prim_name, cx, cy, sx, sy, color)
+    marks = [
+        # ── 하단 직선 (Bot): outer=-y, inner=+y
+        ("Bot_Out", 0.0, -2.0-EDGE, 9.0, LW, WHITE ),
+        ("Bot_Ctr", 0.0, -2.0,      9.0, LW, YELLOW),
+        ("Bot_In",  0.0, -2.0+EDGE, 9.0, LW, WHITE ),
+        # ── 우측 수직 (Right): outer=+x, inner=-x
+        ("Rgt_Out",  4.0+EDGE, -0.5, LW, 4.0, WHITE ),
+        ("Rgt_Ctr",  4.0,      -0.5, LW, 4.0, YELLOW),
+        ("Rgt_In",   4.0-EDGE, -0.5, LW, 4.0, WHITE ),
+        # ── 상단 우측 수평 (URH): outer=+y, inner=-y
+        ("URH_Out",  2.75,  1.0+EDGE, 2.5, LW, WHITE ),
+        ("URH_Ctr",  2.75,  1.0,      2.5, LW, YELLOW),
+        ("URH_In",   2.75,  1.0-EDGE, 2.5, LW, WHITE ),
+        # ── 내부 우측 수직 (IRV): outer=-x(상단 트랙 방향), inner=+x(H 공터 방향)
+        ("IRV_Out",  1.5-EDGE,  2.0, LW, 2.0, WHITE ),
+        ("IRV_Ctr",  1.5,       2.0, LW, 2.0, YELLOW),
+        ("IRV_In",   1.5+EDGE,  2.0, LW, 2.0, WHITE ),
+        # ── 상단 중앙 (Top): outer=+y, inner=-y
+        ("Top_Out",  0.0,  3.0+EDGE, 3.0, LW, WHITE ),
+        ("Top_Ctr",  0.0,  3.0,      3.0, LW, YELLOW),
+        ("Top_In",   0.0,  3.0-EDGE, 3.0, LW, WHITE ),
+        # ── 내부 좌측 수직 (ILV): outer=+x, inner=-x
+        ("ILV_Out", -1.5+EDGE,  2.0, LW, 2.0, WHITE ),
+        ("ILV_Ctr", -1.5,       2.0, LW, 2.0, YELLOW),
+        ("ILV_In",  -1.5-EDGE,  2.0, LW, 2.0, WHITE ),
+        # ── 상단 좌측 수평 (ULH): outer=+y, inner=-y
+        ("ULH_Out", -2.75,  1.0+EDGE, 2.5, LW, WHITE ),
+        ("ULH_Ctr", -2.75,  1.0,      2.5, LW, YELLOW),
+        ("ULH_In",  -2.75,  1.0-EDGE, 2.5, LW, WHITE ),
+        # ── 좌측 수직 (Left): outer=-x, inner=+x
+        ("Lft_Out", -4.0-EDGE, -0.5, LW, 4.0, WHITE ),
+        ("Lft_Ctr", -4.0,      -0.5, LW, 4.0, YELLOW),
+        ("Lft_In",  -4.0+EDGE, -0.5, LW, 4.0, WHITE ),
+    ]
+    for name, cx, cy, sx, sy, col in marks:
+        _slab(stage, f"/World/Markings/{name}", cx, cy, MZ, sx, sy, MH, col, mat_cache)
 
-    # 좌/우 직선 마킹 (y 방향 선)
-    for seg, cx, x_sign in [("Left", LFT_CX, -1), ("Right", RGT_CX, +1)]:
-        for mname, x_off, color in [
-            ("Out",  x_sign * EDGE_OFF,  WHITE ),
-            ("Ctr",  0.0,                YELLOW),
-            ("In",   x_sign * -EDGE_OFF, WHITE ),
-        ]:
-            _slab(stage, f"/World/Markings/{seg}_{mname}",
-                  cx + x_off, 0, MZ, LW, IY*2, MH, color, mat_cache)
+    # 시작/종료선 — 하단 직선 x=0 에 흰색 가로선
+    _slab(stage, "/World/Markings/StartLine", 0.0, -2.0, MZ, LW*3, TW, MH, WHITE, mat_cache)
 
-    # ── 6) 시작선 (Start/Finish) — 하단 직선 x=0 에 흰색 가로선
-    _slab(stage, "/World/Markings/StartLine",
-          0, BOT_CY, MZ, LW*2, TW, MH, WHITE, mat_cache)
-
-    # ── 7) 벽 (LiDAR 감지 + 충돌)
+    # ── 6) 벽 — 외부 경계 + 내부 H 공터 경계 (LiDAR 감지 + 충돌) ────────────
     UsdGeom.Scope.Define(stage, "/World/Walls")
-    WH, WT, WZ = 0.30, 0.10, 0.15   # 높이 30cm, 두께 10cm, z 중심 15cm
 
-    for name, pos, size in [
-        ("OutN", ( 0,      OY,  WZ), (OX*2+WT, WT,       WH)),
-        ("OutS", ( 0,     -OY,  WZ), (OX*2+WT, WT,       WH)),
-        ("OutW", (-OX,     0,   WZ), (WT,       OY*2+WT, WH)),
-        ("OutE", ( OX,     0,   WZ), (WT,       OY*2+WT, WH)),
-        ("InN",  ( 0,      IY,  WZ), (IX*2+WT, WT,       WH)),
-        ("InS",  ( 0,     -IY,  WZ), (IX*2+WT, WT,       WH)),
-        ("InW",  (-IX,     0,   WZ), (WT,       IY*2+WT, WH)),
-        ("InE",  ( IX,     0,   WZ), (WT,       IY*2+WT, WH)),
-    ]:
-        _slab(stage, f"/World/Walls/{name}",
-              pos[0], pos[1], pos[2], size[0], size[1], size[2],
-              WALL_C, mat_cache, physics=True)
+    # 외벽 8개 (트랙 외측 경계)
+    outer_walls = [
+        ("OutS",    0.0,  -2.5,  9.2,  WT ),  # 남 (하단 외곽)
+        ("OutE",    4.5,  -0.5,  WT,   4.2),  # 동 (우측 외곽)
+        ("OutTopE", 3.25,  1.5,  2.6,  WT ),  # 상단-우 수평 외곽
+        ("OutMidE", 2.0,   2.5,  WT,   2.2),  # 상단-우 수직 외곽
+        ("OutN",    0.0,   3.5,  4.2,  WT ),  # 북 (상단 외곽)
+        ("OutMidW",-2.0,   2.5,  WT,   2.2),  # 상단-좌 수직 외곽
+        ("OutTopW",-3.25,  1.5,  2.6,  WT ),  # 상단-좌 수평 외곽
+        ("OutW",   -4.5,  -0.5,  WT,   4.2),  # 서 (좌측 외곽)
+    ]
+    # 내벽 8개 (H자 공터 경계)
+    inner_walls = [
+        ("InS",     0.0,  -1.5,  7.2,  WT ),  # 남 (하단 내측)
+        ("InE",     3.5,  -0.5,  WT,   2.2),  # 동 (우측 내측)
+        ("InTopE",  2.75,  0.5,  1.6,  WT ),  # 상단-우 수평 내측
+        ("InMidE",  2.0,   1.5,  WT,   2.2),  # 상단-우 수직 내측
+        ("InN",     0.0,   2.5,  4.2,  WT ),  # 북 (상단 내측)
+        ("InMidW", -2.0,   1.5,  WT,   2.2),  # 상단-좌 수직 내측
+        ("InTopW", -2.75,  0.5,  1.6,  WT ),  # 상단-좌 수평 내측
+        ("InW",    -3.5,  -0.5,  WT,   2.2),  # 서 (좌측 내측)
+    ]
+    for name, cx, cy, sx, sy in outer_walls + inner_walls:
+        _slab(stage, f"/World/Walls/{name}", cx, cy, WZ, sx, sy, WH, WALL_C, mat_cache, physics=True)
 
-    # ── 8) 건설 구간 (Construction Zone) ─────────────────────────────────────
-    # 상단 직선(y≈+2.0)을 로봇이 -x 방향으로 주행할 때
-    # 외측 차선(y > 2.0, y≈2.25) 에 오렌지 콘 5개 배치
+    # ── 7) 건설 구간 (Construction Zone) ─────────────────────────────────────
+    # 상단 중앙(Top, y=3.0)을 로봇이 -x 방향 주행 시
+    # 외측 차선(y > 3.0, y≈3.25)에 오렌지 콘 3개 배치 → 내측 차선으로 변경 유도
     #
-    #  외벽(y=+2.5) ─────────────────────────────
-    #  외측 차선 [🔶콘] [🔶콘] [🔶콘] [🔶콘] [🔶콘]  ← 로봇이 이 차선으로 오면 회피 필요
-    #  중앙선(y=+2.0) ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
-    #  내측 차선                                      ← 로봇이 이 차선으로 변경하여 통과
-    #  내벽(y=+1.5) ─────────────────────────────
+    #  외벽(y=3.5)  ─────────────────────────
+    #  외측 차선  [🔶 -1.0] [🔶 0.0] [🔶 1.0]  ← 로봇이 이 차선에 접근 시 회피
+    #  중앙선(y=3.0) ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+    #  내측 차선                               ← 로봇이 이 차선으로 변경하여 통과
+    #  내벽(y=2.5)  ─────────────────────────
     #
     UsdGeom.Scope.Define(stage, "/World/Construction")
-    CONE_W  = 0.12   # 콘 단면 폭 (LiDAR 감지 가능한 최소 크기)
-    CONE_H  = 0.25   # 콘 높이
-    CONE_CZ = CONE_H / 2   # z 중심 (바닥 기준)
+    CONE_W, CONE_H = 0.12, 0.25
+    CONE_CZ = CONE_H / 2
+    OUTER_Y = 3.0 + TW / 4   # 외측 차선 중심 y = 3.25
 
-    # 외측 차선 중심: TOP_CY + TW/4 = 2.0 + 0.25 = 2.25
-    OUTER_Y = TOP_CY + TW / 4
-
-    for i, x_pos in enumerate([-2.0, -1.0, 0.0, 1.0, 2.0]):
+    for i, xp in enumerate([-1.0, 0.0, 1.0]):
         _slab(stage, f"/World/Construction/Cone{i}",
-              x_pos, OUTER_Y, CONE_CZ,
-              CONE_W, CONE_W, CONE_H,
-              ORANGE, mat_cache, physics=True)
+              xp, OUTER_Y, CONE_CZ, CONE_W, CONE_W, CONE_H, ORANGE, mat_cache, physics=True)
 
-    # 건설 구간 진입/퇴출 안내선 (중앙선 위 오렌지 마커)
-    for i, x_pos in enumerate([-2.5, 2.5]):
+    # 건설 구간 진입/퇴출 오렌지 마커 (세로선)
+    for i, xp in enumerate([-1.5, 1.5]):
         _slab(stage, f"/World/Construction/Marker{i}",
-              x_pos, TOP_CY, MZ, LW*3, TW, MH, ORANGE, mat_cache)
+              xp, 3.0, MZ, LW*2, TW, MH, ORANGE, mat_cache)
 
-    print("[INFO] AutoRace 스타일 2차선 트랙 구성 완료")
-    print(f"  외부    : {OX*2:.0f}m × {OY*2:.0f}m  /  트랙 폭: {TW:.1f}m  /  차선: 2 × ~0.45m")
-    print(f"  하단 직선: y = {-(OY):.1f} ~ {-(OY-TW):.1f}  (로봇 원본 y≈-1.87 포함 ✓)")
-    print(f"  건설 구간: 상단 직선 외측 차선 (y≈{OUTER_Y:.2f}) 콘 5개")
-    print(f"  차선 마킹: 흰색 {LW*100:.0f}cm + 황색 {LW*100:.0f}cm (카메라 검출용)")
+    print("[INFO] AutoRace 복잡 루프 트랙 구성 완료")
+    print("  세그먼트 : 하단(8m) + 우측(3m) + 상단우(2.5m) + 내부우(2m)")
+    print("            + 상단중(3m) + 내부좌(2m) + 상단좌(2.5m) + 좌측(3m)")
+    print("  내부 공터: H자형 (좌우 2개 + 중앙 공간)")
+    print("  2차선    : 황색 중앙선 + 흰색 경계선 (카메라 검출용)")
+    print("  건설 구간: 상단 중앙 외측 차선 (y≈3.25) 콘 3개")
+    print(f"  로봇 시작: 하단 직선 (y≈-1.87 → 하단 직선 y:-2.5~-1.5 내 포함 ✓)")
 
 
 build_track_scene()
@@ -254,9 +300,9 @@ def setup_camera():
         cam_prim = stage.GetPrimAtPath(viewport.camera_path)
         if cam_prim.IsValid():
             xf = UsdGeom.XformCommonAPI(cam_prim)
-            xf.SetTranslate(Gf.Vec3d(0.0, -10.0, 10.0))
-            xf.SetRotate(Gf.Vec3f(-45.0, 0.0, 0.0))
-            print("[INFO] 카메라: (0, -10, 10) → 트랙 전체 조망")
+            xf.SetTranslate(Gf.Vec3d(0.0, -5.0, 14.0))
+            xf.SetRotate(Gf.Vec3f(-55.0, 0.0, 0.0))
+            print("[INFO] 카메라: (0, -5, 14) → 트랙 전체 조망")
     except Exception as e:
         print(f"[WARN] 카메라 설정 실패: {e}")
 
