@@ -103,6 +103,13 @@ def _cyl(stage, path: str,
 # ─── 씬 구성 ──────────────────────────────────────────────────────────────────
 def build_scene():
     stage = omni.usd.get_context().get_stage()
+
+    # robot USD에 포함된 불필요 프림 제거
+    for _p in ["/World/Cube", "/World/Cube_01", "/World/Cube_02"]:
+        if stage.GetPrimAtPath(_p).IsValid():
+            stage.RemovePrim(_p)
+            print(f"[INFO] 제거됨: {_p}")
+
     UsdGeom.Scope.Define(stage, "/World/Mats")
 
     # ── 색상 (AutoRace 2020)
@@ -207,7 +214,18 @@ def build_scene():
     _box(stage, "/World/Marks/Start", 0.0, BY, MZ, LW * 4, TW, MH,
          "mk_start", WHITE, rough=0.05, emit=EW)
 
-    # ─── 6) QIV: 주차장 + 터널 — 하단/우측 우측 (x>0) ───────────────────
+    # ─── 6) 장애물 큐브 3개 (LANE×LANE 정사각형, Top 직선 슬라롬) ──────────
+    UsdGeom.Scope.Define(stage, "/World/Obstacles")
+    OBH = 0.30
+    for pname, ox, oy in [
+        ("Cube",    -0.50, TY + LANE * 0.42),
+        ("Cube_01",  0.00, TY - LANE * 0.42),
+        ("Cube_02",  0.50, TY + LANE * 0.42),
+    ]:
+        _box(stage, f"/World/Obstacles/{pname}",
+             ox, oy, OBH / 2, LANE, LANE, OBH, "obs_cube", WHITE, phys=True)
+
+    # ─── 7) QIV: 주차장 + 터널 — 하단/우측 우측 (x>0) ───────────────────
     UsdGeom.Scope.Define(stage, "/World/QIV")
 
     # 터널 (Right 수직 하단, y<0 구간)
@@ -244,6 +262,7 @@ def build_scene():
     print(f"  루프  : {BL:.1f} m × {VL:.1f} m 직사각형 클로즈드 루프")
     print(f"  도로폭: {TW:.2f} m  (단일 차선 {LANE:.2f} m)")
     print(f"  차선  : 흰색 3선 @ z={MZ} (외측/중앙/내측 모두 백색)")
+    print(f"  장애물: Cube/Cube_01/Cube_02 — {LANE:.2f}×{LANE:.2f}×{OBH:.2f} m (Top 슬라롬)")
     print(f"  QIV   : 터널 (y={TUN_CY}±{TUN_L/2:.2f})")
     print(f"  로봇 시작: y=-1.87 → Bot y∈[{BY-LANE:.2f}, {BY+LANE:.2f}] ✓")
 
