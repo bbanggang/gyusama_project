@@ -22,6 +22,7 @@ simulation_app = SimulationApp({
     "experience": "/home/linux/isaac_env/lib/python3.11/site-packages/isaacsim/apps/isaacsim.exp.full.kit",
 })
 
+import math
 import omni.usd
 import omni.kit.commands
 import omni.timeline
@@ -66,12 +67,14 @@ def _box(stage, path: str,
          cx: float, cy: float, cz: float,
          sx: float, sy: float, sz: float,
          mkey: str, rgb,
-         rough: float = 0.8, emit=None, phys: bool = False):
-    """Cube 프리미티브 (size=1 → scale(sx,sy,sz) → translate(cx,cy,cz))"""
+         rough: float = 0.8, emit=None, phys: bool = False, rz=None):
+    """Cube 프리미티브 (translate → [rotateZ] → scale)"""
     cube = UsdGeom.Cube.Define(stage, path)
     cube.CreateSizeAttr(1.0)
     xf = UsdGeom.XformCommonAPI(cube)
     xf.SetTranslate(Gf.Vec3d(cx, cy, cz))
+    if rz is not None:
+        xf.SetRotate(Gf.Vec3f(0.0, 0.0, float(rz)))
     xf.SetScale(Gf.Vec3f(sx, sy, sz))
     p = cube.GetPrim()
     if phys:
@@ -185,34 +188,81 @@ def build_scene():
     ]:
         _box(stage, f"/World/Track/{nm}", cx, cy, TZ, TW, TW, TH, "track", ASPHALT, rough=0.9)
 
-    # ─── 5) 2차선 마킹 (spec: z=0.005, width=0.02, emissive) ───────────────
+    # ─── 5) 차선 마킹 — 직선 구간 경계선 2개 (중앙선 없음) ─────────────────
     UsdGeom.Scope.Define(stage, "/World/Marks")
-    EW = (0.7, 0.7, 0.7)   # 흰선 약한 emissive
+    EW = (0.7, 0.7, 0.7)
 
-    for nm, cx, cy, sx, sy, col, em in [
-        # Bottom — 남측백 / 중앙백 / 북측백
-        ("BS", 0.0,       BY - EDGE, BL, LW, WHITE, EW),
-        ("BC", 0.0,       BY,        BL, LW, WHITE, EW),
-        ("BN", 0.0,       BY + EDGE, BL, LW, WHITE, EW),
-        # Right — 동측백 / 중앙백 / 서측백
-        ("RE", RX + EDGE, CY,        LW, VL, WHITE, EW),
-        ("RC", RX,        CY,        LW, VL, WHITE, EW),
-        ("RW", RX - EDGE, CY,        LW, VL, WHITE, EW),
-        # Top — 북측백 / 중앙백 / 남측백
-        ("TN", 0.0,       TY + EDGE, BL, LW, WHITE, EW),
-        ("TC", 0.0,       TY,        BL, LW, WHITE, EW),
-        ("TS", 0.0,       TY - EDGE, BL, LW, WHITE, EW),
-        # Left — 서측백 / 중앙백 / 동측백
-        ("LW", LX - EDGE, CY,        LW, VL, WHITE, EW),
-        ("LC", LX,        CY,        LW, VL, WHITE, EW),
-        ("LE", LX + EDGE, CY,        LW, VL, WHITE, EW),
+    # 코너 패치(TW) 양쪽을 제외한 순수 직선 길이
+    BL_inner = BL - TW   # 3.60 - 0.76 = 2.84 m
+    VL_inner = VL - TW   # 3.30 - 0.76 = 2.54 m
+
+    for nm, cx, cy, sx, sy in [
+        # Bottom: 외측(남) + 내측(북)
+        ("BS", 0.0,       BY - EDGE, BL_inner, LW),
+        ("BN", 0.0,       BY + EDGE, BL_inner, LW),
+        # Right: 외측(동) + 내측(서)
+        ("RE", RX + EDGE, CY,        LW, VL_inner),
+        ("RW", RX - EDGE, CY,        LW, VL_inner),
+        # Top: 외측(북) + 내측(남)
+        ("TN", 0.0,       TY + EDGE, BL_inner, LW),
+        ("TS", 0.0,       TY - EDGE, BL_inner, LW),
+        # Left: 외측(서) + 내측(동)
+        ("LW", LX - EDGE, CY,        LW, VL_inner),
+        ("LE", LX + EDGE, CY,        LW, VL_inner),
     ]:
         _box(stage, f"/World/Marks/{nm}", cx, cy, MZ, sx, sy, MH,
-             f"mk_{nm}", col, rough=0.05, emit=em)
+             "mk_white", WHITE, rough=0.05, emit=EW)
 
     # 시작선 (x=0, 하단 직선)
     _box(stage, "/World/Marks/Start", 0.0, BY, MZ, LW * 4, TW, MH,
          "mk_start", WHITE, rough=0.05, emit=EW)
+
+    # ─── 5-b) 코너 원호 차선 마킹 ────────────────────────────────────────────
+    UsdGeom.Scope.Define(stage, "/World/Marks/Corners")
+    N_ARC    = 14
+    ARC_W    = LW * 1.4
+    R_CENTER = TW / 2              # = LANE = 0.38 m
+    R_INNER  = R_CENTER - EDGE     # ≈ LW/2 ≈ 0.01 m (내측 호)
+    R_OUTER  = R_CENTER + EDGE     # ≈ 0.75 m  (외측 호)
+
+    def _arc_lane(scope_path, pivot_x, pivot_y, a_start, a_end, n=N_ARC):
+        total_angle = abs(a_end - a_start)
+        seg_arc_rad = math.radians(total_angle / n)
+
+        for i in range(n + 1):
+            t     = i / n
+            angle = math.radians(a_start + t * (a_end - a_start))
+            rot_z = math.degrees(angle) + 90.0
+
+            def place(radius, suffix, _a=angle, _r=rot_z, _i=i):
+                sy  = max(radius * seg_arc_rad * 1.05, ARC_W)
+                px  = pivot_x + radius * math.cos(_a)
+                py  = pivot_y + radius * math.sin(_a)
+                _box(stage, f"{scope_path}/{suffix}{_i:02d}",
+                     px, py, MZ, ARC_W, sy, MH,
+                     "arc_white", WHITE, rough=0.05, emit=EW, rz=_r)
+
+            if R_INNER > LW:
+                place(R_INNER, "In")
+            else:
+                if i == n // 2:
+                    _box(stage,
+                         f"{scope_path}/InDot",
+                         pivot_x + R_INNER * math.cos(angle),
+                         pivot_y + R_INNER * math.sin(angle),
+                         MZ, LW, LW, MH, "arc_dot", WHITE, rough=0.05, emit=EW)
+            place(R_OUTER, "Out")
+
+    for cname, pvx, pvy, a0, a1 in [
+        # pivot = 내측 코너 꼭짓점 (호의 중심)
+        ("CornerSE", RX - R_CENTER, BY + R_CENTER, -90.0,   0.0),
+        ("CornerNE", RX - R_CENTER, TY - R_CENTER,   0.0,  90.0),
+        ("CornerNW", LX + R_CENTER, TY - R_CENTER,  90.0, 180.0),
+        ("CornerSW", LX + R_CENTER, BY + R_CENTER, 180.0, 270.0),
+    ]:
+        sp = f"/World/Marks/Corners/{cname}"
+        UsdGeom.Scope.Define(stage, sp)
+        _arc_lane(sp, pvx, pvy, a0, a1)
 
     # ─── 6) 장애물 큐브 3개 (LANE×LANE 정사각형, Top 직선 슬라롬) ──────────
     UsdGeom.Scope.Define(stage, "/World/Obstacles")
