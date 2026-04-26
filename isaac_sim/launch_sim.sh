@@ -17,6 +17,9 @@ rm -rf /home/linux/isaac_env/lib/python3.11/site-packages/isaacsim/kit/data/Kit/
 echo "[INFO] 캐시 삭제 완료"
 
 echo "[INFO] Isaac Sim 시작 중..."
-# run_ros2_sim.py  : simple_room USD 원본 씬
-# run_track_sim.py : 직사각형 루프 트랙 씬 (차선 마킹 + 벽)
+# 카메라 토픽 활성화: ENABLE_CAMERA=1 bash launch_sim.sh
+# (RTX 5070 Ti 에서 충돌 발생 시 기본값(0) 유지)
+export ENABLE_CAMERA=${ENABLE_CAMERA:-0}
+echo "[INFO] 카메라 토픽: $([ "$ENABLE_CAMERA" = "1" ] && echo '활성화 (/camera/image_raw)' || echo '비활성화 (LiDAR 전용)')"
+
 /home/linux/isaac_env/bin/python "$(dirname "$0")/run_track_sim.py"

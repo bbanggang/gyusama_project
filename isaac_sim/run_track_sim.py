@@ -2,11 +2,11 @@
 TurtleBot3 AutoRace 2020 트랙  —  Isaac Sim Standalone (v4)
 ============================================================
 맵     : 6 m × 6 m 아스팔트 바닥판
-루프   : 3.6 m × 3.3 m 직사각형 + R=0.76 m 원호 코너 (4 코너)
-차선   : 3선 시스템 @ z=0.005 m
-         ┌ 최외곽 실선 (흰색, 0.02 m 폭)
-         ├ 중앙선  실선 or 점선 (장애물 구간 = 점선 → 차선 변경 허용)
-         └ 최내곽 실선 (흰색)
+루프   : 3.6 m × 3.3 m 직사각형 + R=0.44 m 원호 코너 (4 코너)
+차선   : 1차선 2선 시스템 @ z=0.005 m (점선 없음)
+         ┌ 좌측 실선 (흰색, 0.02 m 폭)  ← 도로 중심 ±0.21 m
+         └ 우측 실선 (흰색, 0.02 m 폭)
+도로폭 : 0.44 m (TB3 Burger 0.14 m + 장애물 0.20 m + 여유 0.10 m)
 내부망 : 십자형(+) 내부 연결로 — 수평(y=CY) + 수직(x=0) + 4-way 교차점
 로봇   : USD 원점 (0.06, -1.87, -0.712)
 """
@@ -15,7 +15,12 @@ import sys
 import math
 from isaacsim import SimulationApp
 
-sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
+# omni.graph.image.core: RTX 5070 Ti(Blackwell) cold-start 충돌 우회
+# ENABLE_CAMERA=1 환경변수 설정 시 카메라 토픽 발행 활성화 (충돌 위험)
+# 기본값: 비활성화 (LiDAR+장애물 회피만 동작)
+import os as _os
+if _os.environ.get("ENABLE_CAMERA", "0") != "1":
+    sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
 
 simulation_app = SimulationApp({
     "headless": False,
@@ -119,30 +124,30 @@ def build_scene():
     GRAY    = (0.55, 0.55, 0.55)
 
     # ── 기본 치수
-    LANE = 0.38          # 단일 차선 폭
-    TW   = LANE * 2      # 도로 총 폭 = 0.76 m
+    # 1차선: TurtleBot3 Burger 폭(0.14 m) + 장애물(0.20 m) = 0.34 m → 여유 0.10 m 추가
+    LANE = 0.22          # 도로 반폭 (TW / 2)
+    TW   = LANE * 2      # 도로 총 폭 = 0.44 m
     LW   = 0.02          # 차선 마킹 폭
-    EDGE = LANE - LW / 2 # 도로 중심→차선 중심 = 0.37 m
+    EDGE = LANE - LW / 2 # 도로 중심→차선 중심 = 0.21 m
 
     TH = 0.003           # 트랙 슬랩 두께
     TZ = TH / 2
     MH = 0.001           # 차선 마킹 두께
     MZ = 0.005           # 차선 마킹 z 위치
 
-    # ── 루프 중심선 좌표
-    BY = -1.80   # Bottom y
+    # ── 루프 중심선 좌표 (6 × 12 m 바닥판에 맞게 y 확장)
+    BY = -5.00   # Bottom y (바닥 여유 ~1.0 m)
     RX =  1.80   # Right  x
-    TY =  1.50   # Top    y
+    TY =  5.00   # Top    y (상단 여유 ~1.0 m)
     LX = -1.80   # Left   x
     CY = (BY + TY) / 2   # = -0.15
     BL = abs(RX - LX)    # = 3.60 m
     VL = abs(TY - BY)    # = 3.30 m
 
-    # ── 코너 아크 반지름 (R_CORNER = TW → 내측 아크도 눈에 보이는 크기)
-    R_CORNER = TW                  # = 0.76 m  (도로 중심선 코너 아크 반지름)
-    R_IN     = R_CORNER - EDGE     # = 0.39 m  (내측 차선 아크)
-    R_CTR    = R_CORNER            # = 0.76 m  (중앙 차선 아크)
-    R_OUT    = R_CORNER + EDGE     # = 1.13 m  (외측 차선 아크)
+    # ── 코너 아크 반지름 (1차선: 내측·외측 2개만 사용, 중앙선 없음)
+    R_CORNER = TW                  # = 0.44 m  (도로 중심선 코너 아크 반지름)
+    R_IN     = R_CORNER - EDGE     # = 0.23 m  (내측 차선 아크)
+    R_OUT    = R_CORNER + EDGE     # = 0.65 m  (외측 차선 아크)
 
     # ── R_CORNER 코너를 수용하기 위한 직선 구간 축소
     BL_inner = BL - 2 * R_CORNER  # = 2.08 m  (Bottom/Top 직선 순수 길이)
@@ -192,13 +197,13 @@ def build_scene():
 
     rect = UsdLux.RectLight.Define(stage, "/World/RectLight")
     rect.CreateIntensityAttr(28000.0)
-    rect.CreateWidthAttr(10.0)
-    rect.CreateHeightAttr(10.0)
-    UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 7))
+    rect.CreateWidthAttr(8.0)    # 6 m 폭 커버
+    rect.CreateHeightAttr(14.0)  # 12 m 길이 커버
+    UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 8))
     UsdGeom.XformCommonAPI(rect).SetRotate(Gf.Vec3f(-90, 0, 0))
 
-    # ─── 3) 아스팔트 바닥판 ─────────────────────────────────────────────────
-    _box(stage, "/World/Ground", 0, 0, -0.005, 6.0, 6.0, 0.01,
+    # ─── 3) 아스팔트 바닥판 (6 × 12 m) ─────────────────────────────────────
+    _box(stage, "/World/Ground", 0, 0, -0.005, 6.0, 12.0, 0.01,
          "asphalt", ASPHALT, rough=0.9)
 
     # ─── 4) 트랙 표면 ───────────────────────────────────────────────────────
@@ -234,12 +239,25 @@ def build_scene():
     IV_CY_S = (IV_Y0 + (CY - CROSS_V)) / 2  # = (-1.42 + -0.53)/2 = -0.975
     IV_CY_N = ((CY + CROSS_V) + IV_Y1) / 2  # = ( 0.23 +  1.12)/2 =  0.675
 
+    # IV_CY_S=-2.5, IV_CY_N=+2.5 → H2/H3을 VS·VN 중앙에 배치 (T-교차점)
+    H2_Y = IV_CY_S   # = -2.5
+    H3_Y = IV_CY_N   # = +2.5
+
     for nm, cx, cy, sx, sy in [
-        ("HW",    IH_CX_W, CY,     IH_SEG,   TW),
-        ("HE",    IH_CX_E, CY,     IH_SEG,   TW),
-        ("VS",    0.0,     IV_CY_S, TW,      IV_SEG_S),
-        ("VN",    0.0,     IV_CY_N, TW,      IV_SEG_N),
-        ("Cross", 0.0,     CY,      TW,       TW),
+        # 기존 중앙 십자 (y=CY=0)
+        ("HW",     IH_CX_W, CY,    IH_SEG,  TW),
+        ("HE",     IH_CX_E, CY,    IH_SEG,  TW),
+        ("VS",     0.0,  IV_CY_S,  TW,   IV_SEG_S),
+        ("VN",     0.0,  IV_CY_N,  TW,   IV_SEG_N),
+        ("Cross",  0.0,  CY,       TW,   TW),
+        # 추가 수평 연결로 H2 (y=-2.5, VS 중앙 교차)
+        ("HW2",    IH_CX_W, H2_Y,  IH_SEG,  TW),
+        ("HE2",    IH_CX_E, H2_Y,  IH_SEG,  TW),
+        ("Cross2", 0.0,     H2_Y,  TW,      TW),
+        # 추가 수평 연결로 H3 (y=+2.5, VN 중앙 교차)
+        ("HW3",    IH_CX_W, H3_Y,  IH_SEG,  TW),
+        ("HE3",    IH_CX_E, H3_Y,  IH_SEG,  TW),
+        ("Cross3", 0.0,     H3_Y,  TW,      TW),
     ]:
         _box(stage, f"/World/InnerRoad/{nm}", cx, cy, TZ, sx, sy, TH,
              "track", ASPHALT, rough=0.9)
@@ -305,36 +323,27 @@ def build_scene():
             s += dash + gap
             i += 1
 
-    # 5-a) 직선 구간 3선 ─────────────────────────────────────────────────────
+    # 5-a) 직선 구간 2선 (1차선: 좌측 실선 + 우측 실선, 중앙선 없음) ──────────
     UsdGeom.Scope.Define(stage, "/World/Marks/Straight")
 
-    SL = BL_inner   # = 2.08 m  (Bottom/Top 직선 길이)
-    VLS = VL_inner  # = 1.78 m  (Right/Left 직선 길이)
+    SL  = BL_inner   # Bottom/Top 직선 길이
+    VLS = VL_inner   # Right/Left 직선 길이
 
-    # ── Bottom (y=BY=-1.80, x 방향): 장애물 없음 → 중앙선 실선
-    _solid("/World/Marks/Straight/BS",  0.0, BY - EDGE, SL,  LW)   # 외측(남)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Straight/BC")        # 중앙 점선
-    _dash_line("/World/Marks/Straight/BC", -SL / 2, BY, SL / 2, BY)
-    _solid("/World/Marks/Straight/BN",  0.0, BY + EDGE, SL,  LW)   # 내측(북)
+    # ── Bottom (y=BY, x 방향)
+    _solid("/World/Marks/Straight/BS",  0.0, BY - EDGE, SL,  LW)   # 좌측선(남)
+    _solid("/World/Marks/Straight/BN",  0.0, BY + EDGE, SL,  LW)   # 우측선(북)
 
-    # ── Right (x=RX=1.80, y 방향): 터널 있으나 차선 변경 불필요 → 중앙선 실선
-    _solid("/World/Marks/Straight/RE",  RX + EDGE, CY,  LW, VLS)   # 외측(동)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Straight/RC")        # 중앙 점선
-    _dash_line("/World/Marks/Straight/RC", RX, CY - VLS / 2, RX, CY + VLS / 2)
-    _solid("/World/Marks/Straight/RW",  RX - EDGE, CY,  LW, VLS)   # 내측(서)
+    # ── Right (x=RX, y 방향)
+    _solid("/World/Marks/Straight/RE",  RX + EDGE, CY,  LW, VLS)   # 좌측선(동)
+    _solid("/World/Marks/Straight/RW",  RX - EDGE, CY,  LW, VLS)   # 우측선(서)
 
-    # ── Top (y=TY=1.50, x 방향): 슬라롬 장애물 → 중앙선 점선 (차선 변경 허용)
-    _solid("/World/Marks/Straight/TN",  0.0, TY + EDGE, SL,  LW)   # 외측(북) 실선
-    _solid("/World/Marks/Straight/TS",  0.0, TY - EDGE, SL,  LW)   # 내측(남) 실선
-    UsdGeom.Scope.Define(stage, "/World/Marks/Straight/TC")
-    _dash_x("/World/Marks/Straight/TC",                              # 중앙 점선
-            -SL / 2, SL / 2, TY)
+    # ── Top (y=TY, x 방향): 슬라롬 장애물 구간
+    _solid("/World/Marks/Straight/TN",  0.0, TY + EDGE, SL,  LW)   # 좌측선(북)
+    _solid("/World/Marks/Straight/TS",  0.0, TY - EDGE, SL,  LW)   # 우측선(남)
 
-    # ── Left (x=LX=-1.80, y 방향): 장애물 없음 → 중앙선 실선
-    _solid("/World/Marks/Straight/LW",  LX - EDGE, CY,  LW, VLS)   # 외측(서)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Straight/LC")        # 중앙 점선
-    _dash_line("/World/Marks/Straight/LC", LX, CY - VLS / 2, LX, CY + VLS / 2)
-    _solid("/World/Marks/Straight/LE",  LX + EDGE, CY,  LW, VLS)   # 내측(동)
+    # ── Left (x=LX, y 방향)
+    _solid("/World/Marks/Straight/LW",  LX - EDGE, CY,  LW, VLS)   # 좌측선(서)
+    _solid("/World/Marks/Straight/LE",  LX + EDGE, CY,  LW, VLS)   # 우측선(동)
 
     # ── 시작선 (Bottom 중앙)
     _solid("/World/Marks/Straight/Start", 0.0, BY, LW * 4, TW)
@@ -347,12 +356,10 @@ def build_scene():
     N_ARC = 14   # 원호 분할 수
 
     def _corner_3arcs(scope, pvx, pvy, a0_deg, a1_deg):
-        """pivot(pvx,pvy) 기준 a0→a1 도 범위의 3선 원호 마킹.
-        내측(R_IN)/외측(R_OUT): 실선 (style='solid')
-        중앙(R_CTR): 점선 (style='dashed', _dash_arc 사용)
+        """pivot(pvx,pvy) 기준 a0→a1 도 범위의 2선 원호 마킹 (1차선).
+        내측(R_IN) / 외측(R_OUT): 실선만. 중앙선 없음.
         """
         span_deg = a1_deg - a0_deg
-        # ── 내측 / 외측: 실선 세그먼트
         for r, key in [(R_IN, "in"), (R_OUT, "out")]:
             for i in range(N_ARC + 1):
                 t     = i / N_ARC
@@ -365,10 +372,6 @@ def build_scene():
                 _box(stage, f"{scope}/{key}_{i:02d}",
                      px, py, MZ, LW, sl, MH,
                      "mk_white", WHITE, rough=0.05, emit=EW, rz=ang_d)
-        # ── 중앙: 점선 호 (style='dashed')
-        UsdGeom.Scope.Define(stage, f"{scope}/ctr")
-        _dash_arc(f"{scope}/ctr", pvx, pvy, R_CTR, a0_deg, a1_deg,
-                  thick=LW, dash=0.08, gap=0.08)
 
     for cname, (pvx, pvy), a0, a1 in [
         ("SE", pvSE, 270.0, 360.0),
@@ -380,40 +383,44 @@ def build_scene():
         UsdGeom.Scope.Define(stage, sp)
         _corner_3arcs(sp, pvx, pvy, a0, a1)
 
-    # 5-c) 내부 십자 도로 차선 마킹 (3선, 모두 실선) ────────────────────────
+    # 5-c) 내부 십자 도로 차선 마킹 (2선, 모두 실선 — 1차선) ──────────────────
     UsdGeom.Scope.Define(stage, "/World/Marks/Inner")
 
-    # 수평 연결로 서쪽 (IH_W): 외측(S)/내측(N) 실선, 중앙(C) 점선
+    # 수평 연결로 서쪽 (IH_W): 좌측선(S) + 우측선(N)
     UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HW")
     _solid("/World/Marks/Inner/HW/S", IH_CX_W, CY - EDGE, IH_SEG, LW)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HW/C")
-    _dash_line("/World/Marks/Inner/HW/C",
-               IH_CX_W - IH_SEG / 2, CY, IH_CX_W + IH_SEG / 2, CY)
     _solid("/World/Marks/Inner/HW/N", IH_CX_W, CY + EDGE, IH_SEG, LW)
 
-    # 수평 연결로 동쪽 (IH_E): 외측(S)/내측(N) 실선, 중앙(C) 점선
+    # 수평 연결로 동쪽 (IH_E): 좌측선(S) + 우측선(N)
     UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HE")
     _solid("/World/Marks/Inner/HE/S", IH_CX_E, CY - EDGE, IH_SEG, LW)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HE/C")
-    _dash_line("/World/Marks/Inner/HE/C",
-               IH_CX_E - IH_SEG / 2, CY, IH_CX_E + IH_SEG / 2, CY)
     _solid("/World/Marks/Inner/HE/N", IH_CX_E, CY + EDGE, IH_SEG, LW)
 
-    # 수직 연결로 남쪽 (IV_S): 외측(W)/내측(E) 실선, 중앙(C) 점선
+    # 수직 연결로 남쪽 (IV_S): 좌측선(W) + 우측선(E)
     UsdGeom.Scope.Define(stage, "/World/Marks/Inner/VS")
     _solid("/World/Marks/Inner/VS/W", -EDGE, IV_CY_S, LW, IV_SEG_S)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/VS/C")
-    _dash_line("/World/Marks/Inner/VS/C",
-               0.0, IV_CY_S - IV_SEG_S / 2, 0.0, IV_CY_S + IV_SEG_S / 2)
     _solid("/World/Marks/Inner/VS/E",  EDGE, IV_CY_S, LW, IV_SEG_S)
 
-    # 수직 연결로 북쪽 (IV_N): 외측(W)/내측(E) 실선, 중앙(C) 점선
+    # 수직 연결로 북쪽 (IV_N): 좌측선(W) + 우측선(E)
     UsdGeom.Scope.Define(stage, "/World/Marks/Inner/VN")
     _solid("/World/Marks/Inner/VN/W", -EDGE, IV_CY_N, LW, IV_SEG_N)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/VN/C")
-    _dash_line("/World/Marks/Inner/VN/C",
-               0.0, IV_CY_N - IV_SEG_N / 2, 0.0, IV_CY_N + IV_SEG_N / 2)
     _solid("/World/Marks/Inner/VN/E",  EDGE, IV_CY_N, LW, IV_SEG_N)
+
+    # 추가 수평 연결로 H2 (y=H2_Y=-2.5): 좌측(S) + 우측(N) 실선
+    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HW2")
+    _solid("/World/Marks/Inner/HW2/S", IH_CX_W, H2_Y - EDGE, IH_SEG, LW)
+    _solid("/World/Marks/Inner/HW2/N", IH_CX_W, H2_Y + EDGE, IH_SEG, LW)
+    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HE2")
+    _solid("/World/Marks/Inner/HE2/S", IH_CX_E, H2_Y - EDGE, IH_SEG, LW)
+    _solid("/World/Marks/Inner/HE2/N", IH_CX_E, H2_Y + EDGE, IH_SEG, LW)
+
+    # 추가 수평 연결로 H3 (y=H3_Y=+2.5): 좌측(S) + 우측(N) 실선
+    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HW3")
+    _solid("/World/Marks/Inner/HW3/S", IH_CX_W, H3_Y - EDGE, IH_SEG, LW)
+    _solid("/World/Marks/Inner/HW3/N", IH_CX_W, H3_Y + EDGE, IH_SEG, LW)
+    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HE3")
+    _solid("/World/Marks/Inner/HE3/S", IH_CX_E, H3_Y - EDGE, IH_SEG, LW)
+    _solid("/World/Marks/Inner/HE3/N", IH_CX_E, H3_Y + EDGE, IH_SEG, LW)
 
     # 교차점(0, CY): 실제 도로 교차로 — 차선 마킹 없음 (의도적)
 
@@ -435,78 +442,57 @@ def build_scene():
              cx, cy, MZ, sx, sy, MH,
              "mk_white", WHITE, rough=0.4, emit=EW)
 
-    # ─── 5-e) 교차로 내부 점선 십자 (정지선 사이 네모 안 가로/세로 점선) ────────
-    # 정지선 사이 영역:
-    #   x ∈ [-(CROSS_H+SL_OFF), +(CROSS_H+SL_OFF)]
-    #   y ∈ [CY-(CROSS_H+SL_OFF), CY+(CROSS_H+SL_OFF)]
-    # 가로선: y=CY, 서쪽정지선 → 동쪽정지선
-    # 세로선: x=0,  남쪽정지선 → 북쪽정지선
-    UsdGeom.Scope.Define(stage, "/World/Track/IntersectionCross")
-    IX_HALF = CROSS_H + SL_OFF   # 정지선까지의 절반 거리 = 0.48 m
-
-    UsdGeom.Scope.Define(stage, "/World/Track/IntersectionCross/H")
-    _dash_line("/World/Track/IntersectionCross/H",
-               -IX_HALF, CY, IX_HALF, CY,
-               thick=LW, dash=0.06, gap=0.06)
-
-    UsdGeom.Scope.Define(stage, "/World/Track/IntersectionCross/V")
-    _dash_line("/World/Track/IntersectionCross/V",
-               0.0, CY - IX_HALF, 0.0, CY + IX_HALF,
-               thick=LW, dash=0.06, gap=0.06)
+    # 5-e) 교차로 내부 점선 — 1차선 전환으로 제거 (점선 없음 정책)
 
     # ─── 6) 슬라롬 장애물 큐브 (Top 직선) ───────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Obstacles")
     OBH = 0.30
+    # ── Top 직선 장애물: x 간격 1.0 m, 지그재그 3개
     for pname, ox, oy in [
-        ("Obs0", -0.52, TY + LANE * 0.42),   # 외측 차선 (북)
-        ("Obs1",  0.00, TY - LANE * 0.42),   # 내측 차선 (남) → 지그재그
-        ("Obs2",  0.52, TY + LANE * 0.42),   # 외측 차선 (북)
+        ("Obs0", -1.00, TY + LANE * 0.60),   # 외측(북)
+        ("Obs1",  0.00, TY - LANE * 0.60),   # 내측(남)
+        ("Obs2", +1.00, TY + LANE * 0.60),   # 외측(북)
     ]:
         _box(stage, f"/World/Obstacles/{pname}",
-             ox, oy, OBH / 2, 0.2, 0.2, OBH,
+             ox, oy, OBH / 2, 0.15, 0.15, OBH,
              "obs_cube", WHITE, phys=True)
 
-    # ─── 7) QIV: 터널 (Right 구간 하단) ────────────────────────────────────
-    UsdGeom.Scope.Define(stage, "/World/QIV")
+    # ── Left 직선 장애물: y 간격 3.0 m, 지그재그 3개 (x축 좌우 교차)
+    # 도로 중심 x=LX=-1.80, 장애물을 동서로 번갈아 배치
+    for pname, ox, oy in [
+        ("ObsL0", LX + LANE * 0.60, -3.0),   # 내측(동)
+        ("ObsL1", LX - LANE * 0.60,  0.0),   # 외측(서)
+        ("ObsL2", LX + LANE * 0.60, +3.0),   # 내측(동)
+    ]:
+        _box(stage, f"/World/Obstacles/{pname}",
+             ox, oy, OBH / 2, 0.15, 0.15, OBH,
+             "obs_cube", WHITE, phys=True)
 
-    TUN_H  = 0.35
-    TUN_L  = 0.80
-    TUN_T  = 0.03
-    TUN_CY = -0.90
-
-    LWX = RX - LANE - TUN_T / 2
-    RWX = RX + LANE + TUN_T / 2
-    RFZ = TUN_H + TUN_T / 2
-
-    _box(stage, "/World/QIV/TunWL",
-         LWX, TUN_CY, (TUN_H + TUN_T) / 2,
-         TUN_T, TUN_L, TUN_H + TUN_T, "tun", GRAY, phys=True)
-    _box(stage, "/World/QIV/TunWR",
-         RWX, TUN_CY, (TUN_H + TUN_T) / 2,
-         TUN_T, TUN_L, TUN_H + TUN_T, "tun", GRAY, phys=True)
-    _box(stage, "/World/QIV/TunRoof",
-         RX, TUN_CY, RFZ,
-         TW + 2 * TUN_T, TUN_L, TUN_T, "tun", GRAY, phys=True)
-
-    for suf, gy in [("F", TUN_CY + TUN_L / 2), ("B", TUN_CY - TUN_L / 2)]:
-        _box(stage, f"/World/QIV/TunGate{suf}PL",
-             LWX, gy, TUN_H / 2, TUN_T, TUN_T * 2, TUN_H, "tgate", ORANGE, phys=True)
-        _box(stage, f"/World/QIV/TunGate{suf}PR",
-             RWX, gy, TUN_H / 2, TUN_T, TUN_T * 2, TUN_H, "tgate", ORANGE, phys=True)
-        _box(stage, f"/World/QIV/TunGate{suf}Top",
-             RX, gy, TUN_H + TUN_T / 2,
-             TW + 2 * TUN_T, TUN_T * 2, TUN_T, "tgate", ORANGE)
+    # ─── 7) QIV 터널 — 제거됨
 
     # ─── 완료 로그 ──────────────────────────────────────────────────────────
-    print("[INFO] AutoRace 트랙 구성 완료 (v5)")
+    print("[INFO] AutoRace 트랙 구성 완료 (v7 — 1차선, 6×12 m)")
+    print(f"  바닥판 : 6.0 × 12.0 m")
     print(f"  루프   : {BL:.1f} × {VL:.1f} m, 코너 R={R_CORNER:.2f} m")
-    print(f"  도로폭 : {TW:.2f} m  (차선 {LANE:.2f} m × 2)")
-    print(f"  차선   : 외측/내측 실선 | 중앙 점선(d=0.10,g=0.10) | 코너 중앙 점선(0.08/0.08)")
+    print(f"  도로폭 : {TW:.2f} m  (TB3 0.14 + 장애물 0.20 + 여유 0.10 m)")
+    print(f"  차선   : 좌측·우측 실선 2줄 (간격 {EDGE*2:.2f} m, 점선 없음)")
     print(f"  정지선 : N/S/E/W 각 1개, 교차로 경계+{SL_OFF:.2f}m, 두께 {SL_THK:.2f}m")
-    print(f"  교차로 : 정지선 사이 점선 십자(가로+세로, dash=0.06m, ±{IX_HALF:.2f}m)")
-    print(f"  교차점 : (0, {CY:.2f}) — 4-way, 교차로 CROSS_H={CROSS_H:.2f} m")
-    print(f"  터널   : y={TUN_CY}±{TUN_L/2:.2f}  (Right 구간)")
-    print(f"  로봇   : y=-1.87 → Bottom y∈[{BY-LANE:.2f}, {BY+LANE:.2f}] ✓")
+    print(f"  교차점 : (0, {CY:.2f}) — 4-way, CROSS_H={CROSS_H:.2f} m")
+    print(f"  내부망 : 기존 HW/HE(y=0) + H2(y={H2_Y:.1f}) + H3(y={H3_Y:.1f}) 추가")
+    print(f"  장애물 : Top x=±1.0 m 3개 | Left y=-3/0/+3 m 3개 (지그재그)")
+
+    # ─── 로봇 시작 위치 배치 ─────────────────────────────────────────────────
+    _ROBOT_PATH = ("/World/turtlebot_tutorial_multi_sensor_publish_rates"
+                   "_turtlebot3_burger")
+    _robot_prim = stage.GetPrimAtPath(_ROBOT_PATH)
+    if _robot_prim.IsValid():
+        UsdGeom.XformCommonAPI(_robot_prim).SetTranslate(
+            Gf.Vec3d(0.2261, -5.0052, 0.0)
+        )
+        print(f"[INFO] 로봇 배치: {_ROBOT_PATH}")
+        print(f"         위치 (0.2261, -5.0052, 0.0)")
+    else:
+        print(f"[WARN] 로봇 프림 미발견: {_ROBOT_PATH}")
 
 
 build_scene()
