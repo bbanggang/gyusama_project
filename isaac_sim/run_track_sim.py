@@ -207,19 +207,7 @@ def build_scene():
     _box(stage, "/World/Marks/Start", 0.0, BY, MZ, LW * 4, TW, MH,
          "mk_start", WHITE, rough=0.05, emit=EW)
 
-    # ─── 6) 장애물 큐브 3개 (LANE×LANE 정사각형, Top 직선 슬라롬) ──────────
-    # Cube / Cube_01 / Cube_02: 차선 폭과 동일한 0.38×0.38×0.30 m 흰 블록
-    UsdGeom.Scope.Define(stage, "/World/Obstacles")
-    OBH = 0.30   # 큐브 높이
-    for pname, ox, oy in [
-        ("Cube",    -0.50, TY + LANE * 0.42),   # 외측(북) 차선
-        ("Cube_01", -0.00, TY - LANE * 0.42),   # 내측(남) 차선
-        ("Cube_02",  0.50, TY + LANE * 0.42),   # 외측(북) 차선
-    ]:
-        _box(stage, f"/World/Obstacles/{pname}",
-             ox, oy, OBH / 2, LANE, LANE, OBH, "obs_cube", WHITE, phys=True)
-
-    # ─── 7) QIV: 주차장 + 터널 — 하단/우측 우측 (x>0) ───────────────────
+    # ─── 6) QIV: 주차장 + 터널 — 하단/우측 우측 (x>0) ───────────────────
     UsdGeom.Scope.Define(stage, "/World/QIV")
 
     # 터널 (Right 수직 하단, y<0 구간)
@@ -256,7 +244,6 @@ def build_scene():
     print(f"  루프  : {BL:.1f} m × {VL:.1f} m 직사각형 클로즈드 루프")
     print(f"  도로폭: {TW:.2f} m  (단일 차선 {LANE:.2f} m)")
     print(f"  차선  : 흰색 3선 @ z={MZ} (외측/중앙/내측 모두 백색)")
-    print(f"  장애물: Cube/Cube_01/Cube_02 — {LANE:.2f}×{LANE:.2f}×{OBH:.2f} m (Top 직선 슬라롬)")
     print(f"  QIV   : 터널 (y={TUN_CY}±{TUN_L/2:.2f})")
     print(f"  로봇 시작: y=-1.87 → Bot y∈[{BY-LANE:.2f}, {BY+LANE:.2f}] ✓")
 
