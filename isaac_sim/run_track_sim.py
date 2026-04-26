@@ -165,7 +165,7 @@ def build_scene():
     UsdGeom.XformCommonAPI(rect).SetRotate(Gf.Vec3f(-90, 0, 0))
 
     # ─── 3) 5m × 5m 아스팔트 바닥판 (시각용) ──────────────────────────────
-    _box(stage, "/World/Ground", 0, 0, -0.005, 5.0, 5.0, 0.01,
+    _box(stage, "/World/Ground", 0, 0, -0.005, 6.0, 6.0, 0.01,
          "asphalt", ASPHALT, rough=0.9)
 
     # ─── 4) 트랙 표면 ───────────────────────────────────────────────────────
@@ -216,20 +216,7 @@ def build_scene():
     _box(stage, "/World/Marks/Start", 0.0, BY, MZ, LW * 4, TW, MH,
          "mk_start", WHITE, rough=0.05, emit=EW)
 
-    # ─── 6) 외벽 (LiDAR 반사 + 충돌) ───────────────────────────────────────
-    UsdGeom.Scope.Define(stage, "/World/Walls")
-    WZ = WH / 2
-    EO = LANE + WT / 2   # 외벽 중심 오프셋 = 0.405
-
-    for nm, cx, cy, sx, sy in [
-        ("OS", 0.0,      BY - EO,  BL + 2*EO, WT),
-        ("OE", RX + EO,  CY,       WT, VL + 2*EO),
-        ("ON", 0.0,      TY + EO,  BL + 2*EO, WT),
-        ("OW", LX - EO,  CY,       WT, VL + 2*EO),
-    ]:
-        _box(stage, f"/World/Walls/{nm}", cx, cy, WZ, sx, sy, WH, "wall", GRAY, phys=True)
-
-    # ─── 7) QII: 장애물 회피 — 상단 좌측 (x<0, y≈TY) ─────────────────────
+    # ─── 6) QII: 장애물 회피 — 상단 좌측 (x<0, y≈TY) ─────────────────────
     # 흰색 원통 3개: Top 직선 x<0 구간에 슬라롬 배치
     UsdGeom.Scope.Define(stage, "/World/QII")
     for i, (ox, oy) in enumerate([
@@ -271,28 +258,8 @@ def build_scene():
         _cyl(stage, f"/World/QIII/BarR{i}", bx, by, 0.14,  0.025, 0.28, "bar_r", RED,   phys=True)
         _cyl(stage, f"/World/QIII/BarW{i}", bx, by, 0.265, 0.027, 0.07, "bar_w", WHITE)
 
-    # 흰색 큐브 벽 (공사 구역 외측 경계)
-    for i, wx in enumerate([-0.45, -0.85, -1.35]):
-        _box(stage, f"/World/QIII/CWall{i}",
-             wx, BY - LANE * 0.72, 0.09,
-             0.12, 0.08, 0.18, "cwall", WHITE, phys=True)
-
     # ─── 10) QIV: 주차장 + 터널 — 하단/우측 우측 (x>0) ───────────────────
     UsdGeom.Scope.Define(stage, "/World/QIV")
-
-    # 주차 칸 마킹: Bot 직선 x>0 외측 차선 위
-    PKCY = BY - LANE * 0.50   # = -1.99 (외측 차선 내)
-    PKW, PKD = 0.30, 0.26
-    for i, px in enumerate([0.35, 0.78]):
-        for sm, (ddx, ddy, ssx, ssy) in [
-            ("N",  (0,        PKD/2,  PKW, LW )),
-            ("S",  (0,       -PKD/2,  PKW, LW )),
-            ("Wl", (-PKW/2,   0,      LW,  PKD)),
-            ("E",  ( PKW/2,   0,      LW,  PKD)),
-        ]:
-            _box(stage, f"/World/QIV/PK{i}{sm}",
-                 px + ddx, PKCY + ddy, MZ,
-                 ssx, ssy, MH, f"pk{i}{sm}", WHITE, rough=0.05)
 
     # 터널 (Right 수직 하단, y<0 구간)
     TUN_H  = 0.35    # 터널 내부 높이
@@ -330,8 +297,8 @@ def build_scene():
     print(f"  차선  : 외측 백선 {LW:.2f} m + 황색 중앙선 {LW:.2f} m @ z={MZ}")
     print(f"  QI  (우상): S자 주황 콘 3개 + 신호등")
     print(f"  QII (좌상): 장애물 흰 원통 3개 (슬라롬)")
-    print(f"  QIII(좌하): 교통봉 2개 + 흰 큐브 벽 3개")
-    print(f"  QIV (우하): 주차 마킹 2칸 + 터널 (y={TUN_CY}±{TUN_L/2:.2f})")
+    print(f"  QIII(좌하): 교통봉 2개")
+    print(f"  QIV (우하): 터널 (y={TUN_CY}±{TUN_L/2:.2f})")
     print(f"  로봇 시작: y=-1.87 → Bot y∈[{BY-LANE:.2f}, {BY+LANE:.2f}] ✓")
 
 
