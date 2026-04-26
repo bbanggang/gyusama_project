@@ -435,54 +435,24 @@ def build_scene():
              cx, cy, MZ, sx, sy, MH,
              "mk_white", WHITE, rough=0.4, emit=EW)
 
-    # ─── 5-e) 회전 가이드 점선 (Turn Guide Dashed Lines) ────────────────────
-    # [신규] spawn_turn_guides
-    # make_turn_arc 기반으로 파라메트릭하게 계산:
-    #   우회전(R_RIGHT): 각 코너에 인접한 소반경 호  R = LANE/2 ≈ 0.19 m
-    #   좌회전(R_LEFT ): 교차로 중앙을 가로지르는 대반경 호  R = CROSS_H ≈ 0.38 m
-    #
-    # 우회전 pivot = 교차로 내측 모서리 좌표 (±CROSS_H, CY±CROSS_H)
-    # 좌회전 pivot = 동일한 모서리이나 반대쪽에서 호를 그림
-    #
-    # 호 각도 검증 (CCW 기준, 우회전 4개):
-    #   N→E: pivot=(+CROSS_H, CY+CROSS_H), a=180°→270°, CCW
-    #         시작(180°): (CROSS_H-R, CY+CROSS_H) = (0.19,0.23) ← N경계 내측 ✓
-    #         끝  (270°): (CROSS_H,   CY+CROSS_H-R)=(0.38,0.04) ← E경계 내측 ✓
-    # 좌회전 4개 (CW):
-    #   N→W: pivot=(-CROSS_H, CY+CROSS_H), a=0°→-90°, CW
-    #         시작(0°  ): (-CROSS_H+R, CY+CROSS_H)=(0,0.23)    ← N경계 중심 ✓
-    #         끝  (-90°): (-CROSS_H, CY+CROSS_H-R)=(-0.38,-0.15)← W경계 중심 ✓
+    # ─── 5-e) 교차로 내부 점선 십자 (정지선 사이 네모 안 가로/세로 점선) ────────
+    # 정지선 사이 영역:
+    #   x ∈ [-(CROSS_H+SL_OFF), +(CROSS_H+SL_OFF)]
+    #   y ∈ [CY-(CROSS_H+SL_OFF), CY+(CROSS_H+SL_OFF)]
+    # 가로선: y=CY, 서쪽정지선 → 동쪽정지선
+    # 세로선: x=0,  남쪽정지선 → 북쪽정지선
+    UsdGeom.Scope.Define(stage, "/World/Track/IntersectionCross")
+    IX_HALF = CROSS_H + SL_OFF   # 정지선까지의 절반 거리 = 0.48 m
 
-    UsdGeom.Scope.Define(stage, "/World/Track/TurnGuides")
-    G_THICK = 0.015   # 가이드 선 두께 (spec: 0.015 m)
-    G_DASH  = 0.05    # 대시 길이 (spec: 0.05 m)
-    G_GAP   = 0.05    # 갭   길이 (spec: 0.05 m)
-    R_RIGHT = LANE / 2     # 우회전 반경 = 0.19 m
-    R_LEFT  = CROSS_H      # 좌회전 반경 = 0.38 m  (= TW/2)
+    UsdGeom.Scope.Define(stage, "/World/Track/IntersectionCross/H")
+    _dash_line("/World/Track/IntersectionCross/H",
+               -IX_HALF, CY, IX_HALF, CY,
+               thick=LW, dash=0.06, gap=0.06)
 
-    # 우회전 4개 (CCW호, 코너 내측에 접함)
-    for gname, pvx, pvy, a0, a1 in [
-        ("N_right", +CROSS_H, CY + CROSS_H, 180.0, 270.0),   # N 진입→E 진출
-        ("E_right", +CROSS_H, CY - CROSS_H,  90.0, 180.0),   # E 진입→S 진출
-        ("S_right", -CROSS_H, CY - CROSS_H,   0.0,  90.0),   # S 진입→W 진출
-        ("W_right", -CROSS_H, CY + CROSS_H, 270.0, 360.0),   # W 진입→N 진출
-    ]:
-        sp = f"/World/Track/TurnGuides/{gname}"
-        UsdGeom.Scope.Define(stage, sp)
-        _dash_arc(sp, pvx, pvy, R_RIGHT, a0, a1,
-                  thick=G_THICK, dash=G_DASH, gap=G_GAP)
-
-    # 좌회전 4개 (CW호, 교차로 중앙 통과)
-    for gname, pvx, pvy, a0, a1 in [
-        ("N_left",  -CROSS_H, CY + CROSS_H,  0.0,  -90.0),   # N 진입→W 진출
-        ("W_left",  -CROSS_H, CY - CROSS_H,  90.0,   0.0),   # W 진입→S 진출
-        ("S_left",  +CROSS_H, CY - CROSS_H, 180.0,  90.0),   # S 진입→E 진출
-        ("E_left",  +CROSS_H, CY + CROSS_H, 270.0, 180.0),   # E 진입→N 진출
-    ]:
-        sp = f"/World/Track/TurnGuides/{gname}"
-        UsdGeom.Scope.Define(stage, sp)
-        _dash_arc(sp, pvx, pvy, R_LEFT, a0, a1,
-                  thick=G_THICK, dash=G_DASH, gap=G_GAP)
+    UsdGeom.Scope.Define(stage, "/World/Track/IntersectionCross/V")
+    _dash_line("/World/Track/IntersectionCross/V",
+               0.0, CY - IX_HALF, 0.0, CY + IX_HALF,
+               thick=LW, dash=0.06, gap=0.06)
 
     # ─── 6) 슬라롬 장애물 큐브 (Top 직선) ───────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Obstacles")
@@ -533,7 +503,7 @@ def build_scene():
     print(f"  도로폭 : {TW:.2f} m  (차선 {LANE:.2f} m × 2)")
     print(f"  차선   : 외측/내측 실선 | 중앙 점선(d=0.10,g=0.10) | 코너 중앙 점선(0.08/0.08)")
     print(f"  정지선 : N/S/E/W 각 1개, 교차로 경계+{SL_OFF:.2f}m, 두께 {SL_THK:.2f}m")
-    print(f"  가이드 : 우회전 4개(R={R_RIGHT:.2f}m,CCW) + 좌회전 4개(R={R_LEFT:.2f}m,CW)")
+    print(f"  교차로 : 정지선 사이 점선 십자(가로+세로, dash=0.06m, ±{IX_HALF:.2f}m)")
     print(f"  교차점 : (0, {CY:.2f}) — 4-way, 교차로 CROSS_H={CROSS_H:.2f} m")
     print(f"  터널   : y={TUN_CY}±{TUN_L/2:.2f}  (Right 구간)")
     print(f"  로봇   : y=-1.87 → Bottom y∈[{BY-LANE:.2f}, {BY+LANE:.2f}] ✓")
