@@ -128,9 +128,6 @@ def build_scene():
     MH    = 0.001            # 차선 마킹 두께  (spec: scale z=0.001)
     MZ    = 0.005            # 차선 마킹 z 중심 (spec: z=0.005)
 
-    WH    = 0.25             # 외벽 높이
-    WT    = 0.05             # 외벽 두께
-
     # ── 루프 중심선
     BY = -1.80   # 하단(Bottom) y  ← 로봇(y=-1.87) 포함 ✓
     RX =  1.80   # 우측(Right)  x
@@ -239,8 +236,8 @@ def build_scene():
         _cyl(stage, f"/World/QI/Cone{i}",
              cx, cy, 0.10, 0.04, 0.20, "cone_or", ORANGE, phys=True)
 
-    # 신호등 — 동 외벽 바깥, QI 영역
-    TLX = RX + EO + 0.05
+    # 신호등 — 트랙 우측 바깥, QI 영역
+    TLX = RX + LANE + 0.12
     TLY = TY - 0.50
     _box(stage, "/World/QI/TLPole",   TLX, TLY, 0.25, 0.05, 0.05, 0.50, "tl_p", WHITE,  phys=True)
     _cyl(stage, "/World/QI/TLHead",   TLX, TLY, 0.57, 0.09, 0.16, "tl_h", GRAY )
