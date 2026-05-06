@@ -29,7 +29,6 @@ simulation_app = SimulationApp({
 
 import omni.usd
 import omni.kit.commands
-import omni.timeline
 from pxr import UsdGeom, UsdLux, UsdPhysics, UsdShade, Gf, Sdf
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
@@ -523,19 +522,28 @@ for _ in range(5):
     simulation_app.update()
 
 # ── 시뮬레이션 시작 ───────────────────────────────────────────────────────────
-timeline = omni.timeline.get_timeline_interface()
-timeline.play()
+# SimulationContext 로 명시적 물리 스텝 진행 → OmniGraph ROS2 publisher trigger 보장
+from isaacsim.core.api.simulation_context import SimulationContext
+sim_context = SimulationContext(physics_dt=1.0/60.0, rendering_dt=1.0/60.0,
+                                 stage_units_in_meters=1.0)
+sim_context.initialize_physics()
+sim_context.play()
+
+# 초기 안정화 (몇 step 진행하여 OmniGraph 활성화)
+for _ in range(30):
+    sim_context.step(render=True)
 
 print("[INFO] 시뮬레이션 시작")
-print("[INFO] 토픽: /scan /imu /odom /cmd_vel /tf")
+print("[INFO] 토픽: /scan /imu /odom /cmd_vel /tf /clock")
+print(f"[INFO] ROS_DOMAIN_ID = {os.environ.get('ROS_DOMAIN_ID', '0')}")
 print("[INFO] 수동 제어: ros2 run teleop_twist_keyboard teleop_twist_keyboard")
 print("[INFO] 종료: Ctrl+C")
 
 try:
     while simulation_app.is_running():
-        simulation_app.update()
+        sim_context.step(render=True)
 except KeyboardInterrupt:
     print("\n[INFO] 종료")
 
-timeline.stop()
+sim_context.stop()
 simulation_app.close()

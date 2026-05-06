@@ -1,0 +1,12 @@
+# YOLOv8 차선 인식 데이터셋 — Isaac Replicator 합성 데이터
+# generate_synthetic_data.py 가 이 파일을 자동 생성하므로
+# path 는 실행 시 절대경로로 덮어씌워진다.
+
+path: /home/linux/gyusama-project/data/synthetic
+train: images/train
+val:   images/val
+
+nc: 2
+names:
+  0: white_lane
+  1: stop_line

@@ -4,11 +4,17 @@ lane_follow_nav.py — Pure Pursuit 차선 추종 + LiDAR 장애물 회피 + 정
 =============================================================================
 실행:
   Terminal 1: bash launch_sim.sh
-  Terminal 2: source /opt/ros/jazzy/setup.bash
+  Terminal 2: source /home/linux/gyusama-project/isaac_sim/ros2_terminal.sh
               python3 lane_follow_nav.py
 
-구독: /odom (위치), /scan (장애물)
-발행: /cmd_vel (속도 명령)
+토픽:
+  구독:  /scan (장애물), /tf, /tf_static (좌표계)
+  발행:  /cmd_vel (속도 명령), /tf_static (world→odom 정적 변환)
+
+좌표계 (TF tree):
+  world  ── (정적, spawn 위치 오프셋) ──→ odom
+  odom   ── (Isaac Sim 발행) ────────────→ base_link
+  → world→base_link 조회로 절대 좌표(트랙) 위치 획득
 
 상태 머신:
   LANE      : Pure Pursuit 정상 추종
@@ -21,14 +27,21 @@ lane_follow_nav.py — Pure Pursuit 차선 추종 + LiDAR 장애물 회피 + 정
 import math
 import time
 import rclpy
-from rclpy.node  import Node
-from rclpy.qos   import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.node     import Node
+from rclpy.qos      import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.duration import Duration
+from rclpy.time     import Time as RclpyTime
 
 import numpy as np
 
-from nav_msgs.msg      import Odometry
-from sensor_msgs.msg   import LaserScan
-from geometry_msgs.msg import Twist
+from sensor_msgs.msg    import LaserScan
+from geometry_msgs.msg  import Twist, TransformStamped
+
+import tf2_ros
+from tf2_ros          import TransformException
+from tf2_ros.buffer   import Buffer
+from tf2_ros.transform_listener         import TransformListener
+from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -39,6 +52,19 @@ TY       =  5.00
 RX       =  1.80
 LX       = -1.80
 R_CORNER =  0.44
+
+# ═══════════════════════════════════════════════════════════════════════
+# ── 로봇 spawn 위치 (run_track_sim.py 의 SetTranslate 와 동일하게 유지) ──
+# ── world → odom 정적 변환 오프셋 ────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+SPAWN_X = 0.2261
+SPAWN_Y = -5.0052
+SPAWN_Z = 0.0
+
+# TF 프레임 이름
+WORLD_FRAME = "world"
+ODOM_FRAME  = "odom"
+BASE_FRAME  = "base_link"
 
 # ═══════════════════════════════════════════════════════════════════════
 # ── 속도 파라미터 ────────────────────────────────────────────────────────
@@ -169,15 +195,20 @@ class LaneFollowNav(Node):
         ctrl_qos   = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                                 history=HistoryPolicy.KEEP_LAST, depth=1)
 
-        self.sub_odom = self.create_subscription(
-            Odometry,  '/odom', self._cb_odom, sensor_qos)
+        # ── 토픽 ──────────────────────────────────────────────────
         self.sub_scan = self.create_subscription(
             LaserScan, '/scan', self._cb_scan, sensor_qos)
         self.pub_cmd  = self.create_publisher(Twist, '/cmd_vel', ctrl_qos)
 
+        # ── TF 설정 ───────────────────────────────────────────────
+        self.tf_buffer    = Buffer()
+        self.tf_listener  = TransformListener(self.tf_buffer, self)
+        self.static_tf    = StaticTransformBroadcaster(self)
+        self._publish_world_to_odom_tf()
+
         # ── 로봇 상태 ─────────────────────────────────────────────
         self.rx = self.ry = self.ryaw = 0.0
-        self.odom_ok = False
+        self.tf_ok = False
 
         # ── 장애물 상태 ───────────────────────────────────────────
         self.obs_dist       = math.inf
@@ -201,15 +232,54 @@ class LaneFollowNav(Node):
         self.get_logger().info('=' * 58)
 
     # ──────────────────────────────────────────────────────────────
-    # 콜백
+    # TF: world → odom 정적 변환 발행 (한 번)
     # ──────────────────────────────────────────────────────────────
 
-    def _cb_odom(self, msg: Odometry):
-        self.rx   = msg.pose.pose.position.x
-        self.ry   = msg.pose.pose.position.y
-        q         = msg.pose.pose.orientation
+    def _publish_world_to_odom_tf(self):
+        t = TransformStamped()
+        t.header.stamp    = self.get_clock().now().to_msg()
+        t.header.frame_id = WORLD_FRAME
+        t.child_frame_id  = ODOM_FRAME
+        t.transform.translation.x = SPAWN_X
+        t.transform.translation.y = SPAWN_Y
+        t.transform.translation.z = SPAWN_Z
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = 0.0
+        t.transform.rotation.z = 0.0
+        t.transform.rotation.w = 1.0
+        self.static_tf.sendTransform(t)
+        self.get_logger().info(
+            f'정적 TF 발행: {WORLD_FRAME} → {ODOM_FRAME} '
+            f'@ ({SPAWN_X:.4f}, {SPAWN_Y:.4f}, {SPAWN_Z:.4f})')
+
+    def _update_pose_from_tf(self) -> bool:
+        """world → base_link 변환 조회 → self.rx/ry/ryaw 갱신.
+
+        Returns:
+            True  : 변환 조회 성공
+            False : 아직 TF 트리 미준비
+        """
+        try:
+            trans = self.tf_buffer.lookup_transform(
+                WORLD_FRAME, BASE_FRAME,
+                RclpyTime(),
+                timeout=Duration(seconds=0.1))
+        except TransformException as e:
+            self.get_logger().info(
+                f'TF 대기 중 ({WORLD_FRAME}→{BASE_FRAME}): {e}',
+                throttle_duration_sec=2.0)
+            return False
+
+        self.rx   = trans.transform.translation.x
+        self.ry   = trans.transform.translation.y
+        q         = trans.transform.rotation
         self.ryaw = quat_to_yaw(q.x, q.y, q.z, q.w)
-        self.odom_ok = True
+        self.tf_ok = True
+        return True
+
+    # ──────────────────────────────────────────────────────────────
+    # 콜백
+    # ──────────────────────────────────────────────────────────────
 
     def _cb_scan(self, msg: LaserScan):
         ranges = np.array(msg.ranges, dtype=float)
@@ -257,7 +327,7 @@ class LaneFollowNav(Node):
         Returns:
             감지된 정지선 레이블 | None
         """
-        if not self.odom_ok:
+        if not self.tf_ok:
             return None
         now = time.time()
         # 노드 시작 직후 STARTUP_DELAY 동안 비활성
@@ -280,9 +350,9 @@ class LaneFollowNav(Node):
     def _control_loop(self):
         cmd = Twist()
 
-        if not self.odom_ok:
-            self.pub_cmd.publish(cmd)
-            self.get_logger().info('오도메트리 대기...', throttle_duration_sec=2.0)
+        # ── TF 조회로 로봇 절대 위치 갱신 ────────────────────────
+        if not self._update_pose_from_tf():
+            self.pub_cmd.publish(cmd)   # 정지 유지
             return
 
         # Pure Pursuit 곡률 계산 (항상 준비)

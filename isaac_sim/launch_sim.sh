@@ -5,6 +5,7 @@ BRIDGE_DIR=/home/linux/isaac_env/lib/python3.11/site-packages/isaacsim/exts/isaa
 
 export ROS_DISTRO=jazzy
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-1}   # .bashrc 와 동일한 도메인 사용
 export LD_LIBRARY_PATH=$BRIDGE_DIR/jazzy/lib:$LD_LIBRARY_PATH
 export PYTHONPATH=$BRIDGE_DIR/jazzy/rclpy:$PYTHONPATH
 
