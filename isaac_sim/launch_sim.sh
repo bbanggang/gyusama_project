@@ -18,9 +18,11 @@ rm -rf /home/linux/isaac_env/lib/python3.11/site-packages/isaacsim/kit/data/Kit/
 echo "[INFO] 캐시 삭제 완료"
 
 echo "[INFO] Isaac Sim 시작 중..."
-# 카메라 토픽 활성화: ENABLE_CAMERA=1 bash launch_sim.sh
-# (RTX 5070 Ti 에서 충돌 발생 시 기본값(0) 유지)
+# omni.graph.image.core 는 항상 제외 (RTX 5070 Ti Blackwell cold-start segfault 우회)
+# 카메라는 Replicator annotator + rclpy 직접 발행 방식으로 획득 (5주차 구현)
+#   ENABLE_CAMERA=1 → /camera/image_raw 발행 (Replicator → rclpy)
+#   ENABLE_CAMERA=0 → LiDAR(/scan) + 제어 토픽만 활성화 (기본값)
 export ENABLE_CAMERA=${ENABLE_CAMERA:-0}
-echo "[INFO] 카메라 토픽: $([ "$ENABLE_CAMERA" = "1" ] && echo '활성화 (/camera/image_raw)' || echo '비활성화 (LiDAR 전용)')"
+echo "[INFO] 카메라 토픽: $([ "$ENABLE_CAMERA" = "1" ] && echo '활성화 (Replicator→rclpy→/camera/image_raw)' || echo '비활성화 (LiDAR 전용)')"
 
 /home/linux/isaac_env/bin/python "$(dirname "$0")/run_track_sim.py"

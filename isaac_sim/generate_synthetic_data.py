@@ -367,15 +367,17 @@ def main():
     stage = omni.usd.get_context().get_stage()
     waypoints = get_track_waypoints()
 
-    # 가상 카메라 (TurtleBot3 전방 카메라 모사)
+    # 가상 카메라 — IMX219 파라미터 (run_track_sim.py 의 실제 카메라와 일치)
+    # 3.04 mm 렌즈 + 1/4" 센서(3.68×2.76 mm) → H-FOV ≈ 62.2°, V-FOV ≈ 48.8°
+    # Sim-to-Real 도메인 갭 최소화를 위해 실제 카메라와 동일 파라미터 사용
     cam_prim_path = "/World/SyntheticCam"
     cam_item = rep.create.camera(
         position=(waypoints[0][0], waypoints[0][1], CAMERA_H),
         look_at=(waypoints[0][0] + 0.5, waypoints[0][1], CAMERA_H - 0.13),
-        focal_length=3.0,
-        horizontal_aperture=6.0,   # ≈ 90° HFOV
-        vertical_aperture=4.5,
-        clipping_range=(0.01, 15.0),
+        focal_length=3.04,
+        horizontal_aperture=3.68,   # ≈ 62.2° HFOV (IMX219 1/4" 센서)
+        vertical_aperture=2.76,
+        clipping_range=(0.01, 10.0),
     )
     rp = rep.create.render_product(cam_item, (IMG_W, IMG_H))
 

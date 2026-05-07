@@ -9,18 +9,22 @@ TurtleBot3 AutoRace 2020 트랙  —  Isaac Sim Standalone (v4)
 도로폭 : 0.44 m (TB3 Burger 0.14 m + 장애물 0.20 m + 여유 0.10 m)
 내부망 : 십자형(+) 내부 연결로 — 수평(y=CY) + 수직(x=0) + 4-way 교차점
 로봇   : USD 원점 (0.06, -1.87, -0.712)
+
+5주차 추가:
+  omni.graph.image.core 를 항상 제외하고 Replicator annotator + rclpy 직접 발행
+  방식으로 /camera/image_raw 토픽을 활성화한다 (RTX 5070 Ti Blackwell 안전 우회).
+  ENABLE_CAMERA=1 bash isaac_sim/launch_sim.sh  으로 카메라 토픽 활성화.
 """
 import os
 import sys
 import math
 from isaacsim import SimulationApp
 
-# omni.graph.image.core: RTX 5070 Ti(Blackwell) cold-start 충돌 우회
-# ENABLE_CAMERA=1 환경변수 설정 시 카메라 토픽 발행 활성화 (충돌 위험)
-# 기본값: 비활성화 (LiDAR+장애물 회피만 동작)
+# omni.graph.image.core: RTX 5070 Ti(Blackwell) cold-start segfault 우회
+# 카메라는 Replicator annotator + rclpy 직접 발행으로 획득 — 이 확장 불필요
 import os as _os
-if _os.environ.get("ENABLE_CAMERA", "0") != "1":
-    sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
+sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
+_ENABLE_CAM = _os.environ.get("ENABLE_CAMERA", "0") == "1"
 
 simulation_app = SimulationApp({
     "headless": False,
@@ -104,6 +108,215 @@ def _cyl(stage, path: str,
         UsdPhysics.RigidBodyAPI.Apply(p).CreateKinematicEnabledAttr(True)
     _bind(stage, p, mkey, rgb, rough)
     return p
+
+
+# ─── 로봇 USD 프림 경로 (모듈 레벨) ──────────────────────────────────────────
+# 실제 경로는 launch 로그의 물리 경고에서 확인:
+#   /World/turtlebot_tutorial_multi_sensor_publish_rates/turtlebot3_burger/base_footprint
+_ROBOT_PATH = "/World/turtlebot_tutorial_multi_sensor_publish_rates/turtlebot3_burger"
+
+# ─── 5주차: IMX219 카메라 브리지 상수 ────────────────────────────────────────
+_CAM_FL   = 3.04    # 초점거리 [mm]  — IMX219 3.04 mm 렌즈
+_CAM_HA   = 3.68    # 수평 센서 [mm] — 1/4" 센서 → H-FOV ≈ 62.2°
+_CAM_VA   = 2.76    # 수직 센서 [mm] — 1/4" 센서 → V-FOV ≈ 48.8°
+_CAM_W    = 640     # 발행 해상도 (가로)
+_CAM_HT   = 480     # 발행 해상도 (세로)
+_CAM_OFZ  = 0.12    # 카메라 높이 오프셋 [m]  (로봇 기준)
+_CAM_OFX  = 0.05    # 카메라 전방 오프셋 [m]  (로봇 기준)
+_CAM_TILT = -15.0   # 하방 경사 [deg]
+_CAM_HZ   = 10      # /camera/image_raw 발행 주기 [Hz]  (시뮬 60 Hz 분주)
+
+
+def _setup_cam_bridge(stage):
+    """IMX219 가상 카메라 + Replicator RGB annotator + rclpy 퍼블리셔 초기화.
+
+    카메라 USD 프림을 로봇 루트 프림 자식으로 생성 → 로봇 이동 시 자동 추종.
+    omni.graph.image.core 없이 동작하므로 RTX 5070 Ti Blackwell 에서 안전.
+
+    반환:
+        (rgb_annotator, rclpy_node, img_publisher)  또는 실패 시 None
+    """
+    try:
+        import omni.replicator.core as rep
+        import rclpy
+        from sensor_msgs.msg import Image as RosImage
+
+        # ── 1) 카메라 USD 프림 — base_footprint 자식으로 생성 (물리 시뮬 추종)
+        # turtlebot3_burger 루트 프림은 USD Xform 이 물리 업데이트에 갱신되지 않음.
+        # 실제로 움직이는 강체는 base_footprint 이므로 그 자식으로 붙여야 카메라가 따라감.
+        cam_path = _ROBOT_PATH + "/base_footprint/imx219_camera"
+        cam_usd  = UsdGeom.Camera.Define(stage, cam_path)
+        cam_usd.CreateFocalLengthAttr(_CAM_FL)
+        cam_usd.CreateHorizontalApertureAttr(_CAM_HA)
+        cam_usd.CreateVerticalApertureAttr(_CAM_VA)
+        cam_usd.CreateClippingRangeAttr(Gf.Vec2f(0.01, 10.0))
+
+        # 로봇 로컬 좌표: 전방 _CAM_OFX m, 높이 _CAM_OFZ m
+        # USD 카메라 기본: -Z 시선, +Y 이미지 up
+        # base_footprint 프레임: +X=전방, +Y=좌측, +Z=위
+        #
+        # USD XYZ Euler (b=-90° 고정 시) image up 공식: (0, cos(a-c), sin(a-c))
+        #   b=-90°: view = +X_base(전방), a와 c는 roll 보정에 사용
+        #   up=+Z_base 조건: sin(a-c)=1 → c = a-90°
+        #   a=0°, c=-90° → up=(0,0,1)=+Z_base ✓  image right=-Y_base(로봇 우측) ✓
+        xf = UsdGeom.XformCommonAPI(cam_usd)
+        xf.SetTranslate(Gf.Vec3d(_CAM_OFX, 0.0, _CAM_OFZ))
+        xf.SetRotate(Gf.Vec3f(0.0, -90.0, -90.0))
+
+        # ── 2) Replicator render product + RGB annotator
+        rp  = rep.create.render_product(cam_path, (_CAM_W, _CAM_HT))
+        ann = rep.AnnotatorRegistry.get_annotator("rgb")
+        ann.attach([rp])
+
+        # ── 3) rclpy 초기화 + /camera/image_raw 퍼블리셔
+        try:
+            rclpy.init()
+        except RuntimeError:
+            pass  # ROS2 브리지 확장이 이미 초기화한 경우
+
+        # use_sim_time=True: Isaac Sim 브리지의 /clock 을 구독하여
+        # TF 타임스탬프(시뮬 시간)와 이미지 타임스탬프를 동기화
+        cam_node = rclpy.create_node(
+            "isaac_imx219_bridge",
+            parameter_overrides=[
+                rclpy.parameter.Parameter(
+                    "use_sim_time",
+                    rclpy.Parameter.Type.BOOL,
+                    True,
+                )
+            ],
+        )
+        img_pub  = cam_node.create_publisher(RosImage, "/camera/image_raw", 1)
+        from sensor_msgs.msg import CameraInfo
+        info_pub = cam_node.create_publisher(CameraInfo, "/camera/camera_info", 1)
+
+        # ── 4) Static TF: base_link → camera_rgb_optical_frame
+        # RViz2 Camera 디스플레이가 로봇 이동에 따라 카메라 시점을 실시간 추종하려면
+        # TF 트리에 base_link → camera_rgb_optical_frame 경로가 있어야 함
+        import tf2_ros
+        from geometry_msgs.msg import TransformStamped
+        import math as _math
+
+        tf_static = tf2_ros.StaticTransformBroadcaster(cam_node)
+        tf_msg = TransformStamped()
+        tf_msg.header.stamp    = cam_node.get_clock().now().to_msg()
+        tf_msg.header.frame_id = "base_link"
+        tf_msg.child_frame_id  = "camera_rgb_optical_frame"
+
+        # 카메라 위치: 전방 _CAM_OFX m, 높이 _CAM_OFZ m
+        tf_msg.transform.translation.x = _CAM_OFX
+        tf_msg.transform.translation.y = 0.0
+        tf_msg.transform.translation.z = _CAM_OFZ
+
+        # 카메라 방향: base_link → camera_rgb_optical_frame
+        # ROS optical frame 규약: +X 우측(이미지), +Y 하방(이미지), +Z 전방(시선)
+        #
+        # SetRotate(0, -90°, -90°) 결과:
+        #   +Z_cam(시선) = +X_base(전방)
+        #   +X_cam(이미지 우) = -Y_base(로봇 우측)
+        #   +Y_cam(이미지 하) = -Z_base(세계 아래)
+        #
+        # 표준 수평 전방 카메라 쿼터니언: [w=0.5, x=-0.5, y=0.5, z=-0.5]
+        tf_msg.transform.rotation.x = -0.5
+        tf_msg.transform.rotation.y =  0.5
+        tf_msg.transform.rotation.z = -0.5
+        tf_msg.transform.rotation.w =  0.5
+
+        tf_static.sendTransform(tf_msg)
+
+        # ── 5) CameraInfo 퍼블리셔 — IMX219 내부 파라미터 (핀홀 모델, 왜곡 없음)
+        # fx = (focal_length / h_aperture) * width  = (3.04/3.68)*640  ≈ 528.70 px
+        # fy = (focal_length / v_aperture) * height = (3.04/2.76)*480  ≈ 529.04 px
+        _fx = (_CAM_FL / _CAM_HA) * _CAM_W   # ≈ 528.70
+        _fy = (_CAM_FL / _CAM_VA) * _CAM_HT  # ≈ 529.04
+        _cx = _CAM_W  / 2.0                   # 320.0
+        _cy = _CAM_HT / 2.0                   # 240.0
+
+        from sensor_msgs.msg import CameraInfo as _CamInfo
+        _cam_info_msg = _CamInfo()
+        _cam_info_msg.header.frame_id = "camera_rgb_optical_frame"
+        _cam_info_msg.width           = _CAM_W
+        _cam_info_msg.height          = _CAM_HT
+        _cam_info_msg.distortion_model = "plumb_bob"
+        _cam_info_msg.d = [0.0, 0.0, 0.0, 0.0, 0.0]
+        _cam_info_msg.k = [_fx, 0.0, _cx,
+                           0.0, _fy, _cy,
+                           0.0, 0.0, 1.0]
+        _cam_info_msg.r = [1.0, 0.0, 0.0,
+                           0.0, 1.0, 0.0,
+                           0.0, 0.0, 1.0]
+        _cam_info_msg.p = [_fx, 0.0, _cx, 0.0,
+                           0.0, _fy, _cy, 0.0,
+                           0.0, 0.0, 1.0, 0.0]
+
+        print("[CAM] IMX219 카메라 브리지 초기화 완료")
+        print(f"[CAM]   USD 경로  : {cam_path}")
+        print(f"[CAM]   해상도    : {_CAM_W}×{_CAM_HT}")
+        print(f"[CAM]   H-FOV     : ≈ 62.2°  (focal {_CAM_FL} mm / sensor {_CAM_HA} mm)")
+        print(f"[CAM]   내부파라미터: fx={_fx:.1f} fy={_fy:.1f} cx={_cx} cy={_cy}")
+        print("[CAM]   ROS2 토픽 : /camera/image_raw  /camera/camera_info")
+        print("[CAM]   TF        : base_link → camera_rgb_optical_frame (static)")
+
+        return ann, cam_node, img_pub, info_pub, _cam_info_msg
+
+    except Exception as exc:
+        print(f"[CAM][ERROR] 카메라 브리지 초기화 실패: {exc}")
+        return None
+
+
+def _publish_cam_frame(ann, cam_node, img_pub, info_pub, cam_info_msg):
+    """Replicator RGB annotator → /camera/image_raw + /camera/camera_info 동시 발행."""
+    import omni.replicator.core as rep
+    import numpy as np
+    from sensor_msgs.msg import Image as RosImage
+    import rclpy
+
+    rep.orchestrator.step(pause_timeline=False)
+
+    frame = ann.get_data()
+    if frame is None:
+        return
+    rgba = frame.get("data") if isinstance(frame, dict) else frame
+    if rgba is None or rgba.size == 0:
+        return
+
+    # ── 진단용 디버그 출력 (10회마다 1회) ─────────────────────────────────────
+    # 카메라 월드 좌표가 바뀌는지(로봇 이동 추종 여부) + 픽셀 평균(렌더 갱신 여부) 확인
+    if not hasattr(_publish_cam_frame, "_dbg_cnt"):
+        _publish_cam_frame._dbg_cnt = 0
+    _publish_cam_frame._dbg_cnt += 1
+    if _publish_cam_frame._dbg_cnt % 10 == 1:
+        try:
+            import omni.usd
+            from pxr import UsdGeom
+            _stage = omni.usd.get_context().get_stage()
+            _cp    = _stage.GetPrimAtPath(_ROBOT_PATH + "/base_footprint/imx219_camera")
+            if _cp.IsValid():
+                _xfc   = UsdGeom.XformCache()
+                _pos   = _xfc.GetLocalToWorldTransform(_cp).ExtractTranslation()
+                print(f"[CAM][D] world=({_pos[0]:.3f},{_pos[1]:.3f},{_pos[2]:.3f})"
+                      f"  pixel_mean={rgba.mean():.1f}")
+        except Exception:
+            pass
+    # ─────────────────────────────────────────────────────────────────────────
+
+    rgb = np.ascontiguousarray(rgba[:, :, :3])   # (H, W, 3) uint8 RGB
+    stamp = cam_node.get_clock().now().to_msg()
+
+    msg                = RosImage()
+    msg.header.stamp   = stamp
+    msg.header.frame_id = "camera_rgb_optical_frame"
+    msg.height         = rgb.shape[0]
+    msg.width          = rgb.shape[1]
+    msg.encoding       = "rgb8"
+    msg.is_bigendian   = 0
+    msg.step           = rgb.shape[1] * 3
+    msg.data           = rgb.tobytes()
+
+    cam_info_msg.header.stamp = stamp
+    info_pub.publish(cam_info_msg)
+    img_pub.publish(msg)
+    rclpy.spin_once(cam_node, timeout_sec=0.0)
 
 
 # ─── 씬 구성 ──────────────────────────────────────────────────────────────────
@@ -481,8 +694,6 @@ def build_scene():
     print(f"  장애물 : Top x=±1.0 m 3개 | Left y=-3/0/+3 m 3개 (지그재그)")
 
     # ─── 로봇 시작 위치 배치 ─────────────────────────────────────────────────
-    _ROBOT_PATH = ("/World/turtlebot_tutorial_multi_sensor_publish_rates"
-                   "_turtlebot3_burger")
     _robot_prim = stage.GetPrimAtPath(_ROBOT_PATH)
     if _robot_prim.IsValid():
         UsdGeom.XformCommonAPI(_robot_prim).SetTranslate(
@@ -533,17 +744,49 @@ sim_context.play()
 for _ in range(30):
     sim_context.step(render=True)
 
+# ── 5주차: IMX219 카메라 브리지 초기화 ────────────────────────────────────────
+# 반드시 sim_context.play() + 초기 안정화 이후에 생성해야
+# Replicator render_product 가 실행 중인 시뮬레이션에 올바르게 연결된다.
+_cam_bridge = None
+if _ENABLE_CAM:
+    stage_ref = omni.usd.get_context().get_stage()
+    _cam_bridge = _setup_cam_bridge(stage_ref)
+    if _cam_bridge:
+        # 렌더 제품 초기 워밍업 — 첫 번째 프레임을 즉시 렌더링
+        simulation_app.update()
+
 print("[INFO] 시뮬레이션 시작")
 print("[INFO] 토픽: /scan /imu /odom /cmd_vel /tf /clock")
+if _ENABLE_CAM and _cam_bridge:
+    print("[INFO] 카메라 토픽: /camera/image_raw (Replicator → rclpy 직접 발행)")
 print(f"[INFO] ROS_DOMAIN_ID = {os.environ.get('ROS_DOMAIN_ID', '0')}")
 print("[INFO] 수동 제어: ros2 run teleop_twist_keyboard teleop_twist_keyboard")
 print("[INFO] 종료: Ctrl+C")
 
+_cam_tick = 0
+_cam_interval = max(1, 60 // _CAM_HZ)   # 60 Hz 시뮬 기준 발행 분주비
+
 try:
     while simulation_app.is_running():
         sim_context.step(render=True)
+
+        if _ENABLE_CAM and _cam_bridge and _cam_tick % _cam_interval == 0:
+            # simulation_app.update(): Replicator render_product 를 현재 프레임으로 갱신.
+            # rep.orchestrator.step() 대신 사용 — 가볍고 시뮬 루프와 충돌 없음.
+            simulation_app.update()
+            _publish_cam_frame(*_cam_bridge)
+        _cam_tick += 1
+
 except KeyboardInterrupt:
     print("\n[INFO] 종료")
+finally:
+    if _ENABLE_CAM and _cam_bridge:
+        try:
+            import rclpy
+            _cam_bridge[1].destroy_node()
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 sim_context.stop()
 simulation_app.close()
