@@ -153,15 +153,16 @@ def _setup_cam_bridge(stage):
 
         # 로봇 로컬 좌표: 전방 _CAM_OFX m, 높이 _CAM_OFZ m
         # USD 카메라 기본: -Z 시선, +Y 이미지 up
-        # base_footprint 프레임: +X=전방, +Y=좌측, +Z=위
+        # base_footprint 프레임 (ROS 표준): +X=전방, +Y=좌측, +Z=위
         #
-        # USD XYZ Euler (b=-90° 고정 시) image up 공식: (0, cos(a-c), sin(a-c))
-        #   b=-90°: view = +X_base(전방), a와 c는 roll 보정에 사용
-        #   up=+Z_base 조건: sin(a-c)=1 → c = a-90°
-        #   a=0°, c=-90° → up=(0,0,1)=+Z_base ✓  image right=-Y_base(로봇 우측) ✓
+        # USD XYZ Euler → Rz(c)*Ry(b)*Rx(a) 순서로 적용
+        # (a=75, b=0, c=-90):
+        #   시선 = Rz(-90)*Rx(75)*(0,0,-1) = (sin75, 0, -cos75) ≈ 전방+하방15°
+        #   up   = Rz(-90)*Rx(75)*(0,1,0) = (cos75, 0, sin75) ≈ +Z(위) ✓
+        #   right= Rz(-90)*Rx(75)*(1,0,0) = (0, -1, 0) = -Y(우측) ✓
         xf = UsdGeom.XformCommonAPI(cam_usd)
         xf.SetTranslate(Gf.Vec3d(_CAM_OFX, 0.0, _CAM_OFZ))
-        xf.SetRotate(Gf.Vec3f(0.0, -90.0, -90.0))
+        xf.SetRotate(Gf.Vec3f(75.0, 0.0, -90.0))
 
         # ── 2) Replicator render product + RGB annotator
         rp  = rep.create.render_product(cam_path, (_CAM_W, _CAM_HT))
@@ -300,6 +301,7 @@ def _publish_cam_frame(ann, cam_node, img_pub, info_pub, cam_info_msg):
             pass
     # ─────────────────────────────────────────────────────────────────────────
 
+    # 카메라 SetRotate(75,0,-90) 에서 up=+Z 보정 완료 → np.rot90 불필요
     rgb = np.ascontiguousarray(rgba[:, :, :3])   # (H, W, 3) uint8 RGB
     stamp = cam_node.get_clock().now().to_msg()
 
@@ -336,8 +338,8 @@ def build_scene():
     GRAY    = (0.55, 0.55, 0.55)
 
     # ── 기본 치수
-    # 1차선: TurtleBot3 Burger 폭(0.14 m) + 장애물(0.20 m) = 0.34 m → 여유 0.10 m 추가
-    LANE = 0.22          # 도로 반폭 (TW / 2)
+    # 1차선: TurtleBot3 Burger 폭(0.14 m) + 카메라 시야 확보 여유
+    LANE = 0.30          # 도로 반폭 (TW / 2)
     TW   = LANE * 2      # 도로 총 폭 = 0.44 m
     LW   = 0.02          # 차선 마킹 폭
     EDGE = LANE - LW / 2 # 도로 중심→차선 중심 = 0.21 m
@@ -347,14 +349,15 @@ def build_scene():
     MH = 0.001           # 차선 마킹 두께
     MZ = 0.005           # 차선 마킹 z 위치
 
-    # ── 루프 중심선 좌표 (6 × 12 m 바닥판에 맞게 y 확장)
-    BY = -5.00   # Bottom y (바닥 여유 ~1.0 m)
+    # ── 루프 중심선 좌표
+    # 로봇 USD 원점이 약 (0.01, -1.87) 에 고정 → Bottom 직선을 로봇에 맞춤
+    BY = -1.87   # Bottom y (로봇 USD 원점 y 좌표)
     RX =  1.80   # Right  x
-    TY =  5.00   # Top    y (상단 여유 ~1.0 m)
+    TY =  8.13   # Top    y (BY + 10.0 m)
     LX = -1.80   # Left   x
-    CY = (BY + TY) / 2   # = -0.15
+    CY = (BY + TY) / 2   # 트랙 중심 y
     BL = abs(RX - LX)    # = 3.60 m
-    VL = abs(TY - BY)    # = 3.30 m
+    VL = abs(TY - BY)    # = 10.00 m
 
     # ── 코너 아크 반지름 (1차선: 내측·외측 2개만 사용, 중앙선 없음)
     R_CORNER = TW                  # = 0.44 m  (도로 중심선 코너 아크 반지름)
@@ -414,8 +417,8 @@ def build_scene():
     UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 8))
     UsdGeom.XformCommonAPI(rect).SetRotate(Gf.Vec3f(-90, 0, 0))
 
-    # ─── 3) 아스팔트 바닥판 (6 × 12 m) ─────────────────────────────────────
-    _box(stage, "/World/Ground", 0, 0, -0.005, 6.0, 12.0, 0.01,
+    # ─── 3) 아스팔트 바닥판 (트랙 전체 커버) ─────────────────────────────
+    _box(stage, "/World/Ground", 0, CY, -0.005, 6.0, 14.0, 0.01,
          "asphalt", ASPHALT, rough=0.9)
 
     # ─── 4) 트랙 표면 ───────────────────────────────────────────────────────
@@ -443,36 +446,7 @@ def build_scene():
         _box(stage, f"/World/Track/{nm}", cx_c, cy_c, TZ,
              R_OUT, R_OUT, TH, "track", ASPHALT, rough=0.9)
 
-    # 4-c) 내부 십자 도로 표면
-    UsdGeom.Scope.Define(stage, "/World/InnerRoad")
-
-    IH_CX_W = (IH_X0 + (-CROSS_H)) / 2   # = (-1.42 + -0.38)/2 = -0.90
-    IH_CX_E = (CROSS_H  + IH_X1) / 2     # = ( 0.38 +  1.42)/2 =  0.90
-    IV_CY_S = (IV_Y0 + (CY - CROSS_V)) / 2  # = (-1.42 + -0.53)/2 = -0.975
-    IV_CY_N = ((CY + CROSS_V) + IV_Y1) / 2  # = ( 0.23 +  1.12)/2 =  0.675
-
-    # IV_CY_S=-2.5, IV_CY_N=+2.5 → H2/H3을 VS·VN 중앙에 배치 (T-교차점)
-    H2_Y = IV_CY_S   # = -2.5
-    H3_Y = IV_CY_N   # = +2.5
-
-    for nm, cx, cy, sx, sy in [
-        # 기존 중앙 십자 (y=CY=0)
-        ("HW",     IH_CX_W, CY,    IH_SEG,  TW),
-        ("HE",     IH_CX_E, CY,    IH_SEG,  TW),
-        ("VS",     0.0,  IV_CY_S,  TW,   IV_SEG_S),
-        ("VN",     0.0,  IV_CY_N,  TW,   IV_SEG_N),
-        ("Cross",  0.0,  CY,       TW,   TW),
-        # 추가 수평 연결로 H2 (y=-2.5, VS 중앙 교차)
-        ("HW2",    IH_CX_W, H2_Y,  IH_SEG,  TW),
-        ("HE2",    IH_CX_E, H2_Y,  IH_SEG,  TW),
-        ("Cross2", 0.0,     H2_Y,  TW,      TW),
-        # 추가 수평 연결로 H3 (y=+2.5, VN 중앙 교차)
-        ("HW3",    IH_CX_W, H3_Y,  IH_SEG,  TW),
-        ("HE3",    IH_CX_E, H3_Y,  IH_SEG,  TW),
-        ("Cross3", 0.0,     H3_Y,  TW,      TW),
-    ]:
-        _box(stage, f"/World/InnerRoad/{nm}", cx, cy, TZ, sx, sy, TH,
-             "track", ASPHALT, rough=0.9)
+    # 4-c) 내부 십자 도로 — 제거됨 (교차로 없는 단순 루프 트랙)
 
     # ─── 5) 차선 마킹 ───────────────────────────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Marks")
@@ -557,8 +531,7 @@ def build_scene():
     _solid("/World/Marks/Straight/LW",  LX - EDGE, CY,  LW, VLS)   # 좌측선(서)
     _solid("/World/Marks/Straight/LE",  LX + EDGE, CY,  LW, VLS)   # 우측선(동)
 
-    # ── 시작선 (Bottom 중앙)
-    _solid("/World/Marks/Straight/Start", 0.0, BY, LW * 4, TW)
+    # ── 시작선 — 제거됨
 
     # 5-b) 코너 3선 원호 마킹 ─────────────────────────────────────────────────
     # rot_z = angle_deg 으로 설정해야 local+y 가 CCW 접선 방향과 일치
@@ -595,66 +568,8 @@ def build_scene():
         UsdGeom.Scope.Define(stage, sp)
         _corner_3arcs(sp, pvx, pvy, a0, a1)
 
-    # 5-c) 내부 십자 도로 차선 마킹 (2선, 모두 실선 — 1차선) ──────────────────
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner")
-
-    # 수평 연결로 서쪽 (IH_W): 좌측선(S) + 우측선(N)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HW")
-    _solid("/World/Marks/Inner/HW/S", IH_CX_W, CY - EDGE, IH_SEG, LW)
-    _solid("/World/Marks/Inner/HW/N", IH_CX_W, CY + EDGE, IH_SEG, LW)
-
-    # 수평 연결로 동쪽 (IH_E): 좌측선(S) + 우측선(N)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HE")
-    _solid("/World/Marks/Inner/HE/S", IH_CX_E, CY - EDGE, IH_SEG, LW)
-    _solid("/World/Marks/Inner/HE/N", IH_CX_E, CY + EDGE, IH_SEG, LW)
-
-    # 수직 연결로 남쪽 (IV_S): 좌측선(W) + 우측선(E)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/VS")
-    _solid("/World/Marks/Inner/VS/W", -EDGE, IV_CY_S, LW, IV_SEG_S)
-    _solid("/World/Marks/Inner/VS/E",  EDGE, IV_CY_S, LW, IV_SEG_S)
-
-    # 수직 연결로 북쪽 (IV_N): 좌측선(W) + 우측선(E)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/VN")
-    _solid("/World/Marks/Inner/VN/W", -EDGE, IV_CY_N, LW, IV_SEG_N)
-    _solid("/World/Marks/Inner/VN/E",  EDGE, IV_CY_N, LW, IV_SEG_N)
-
-    # 추가 수평 연결로 H2 (y=H2_Y=-2.5): 좌측(S) + 우측(N) 실선
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HW2")
-    _solid("/World/Marks/Inner/HW2/S", IH_CX_W, H2_Y - EDGE, IH_SEG, LW)
-    _solid("/World/Marks/Inner/HW2/N", IH_CX_W, H2_Y + EDGE, IH_SEG, LW)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HE2")
-    _solid("/World/Marks/Inner/HE2/S", IH_CX_E, H2_Y - EDGE, IH_SEG, LW)
-    _solid("/World/Marks/Inner/HE2/N", IH_CX_E, H2_Y + EDGE, IH_SEG, LW)
-
-    # 추가 수평 연결로 H3 (y=H3_Y=+2.5): 좌측(S) + 우측(N) 실선
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HW3")
-    _solid("/World/Marks/Inner/HW3/S", IH_CX_W, H3_Y - EDGE, IH_SEG, LW)
-    _solid("/World/Marks/Inner/HW3/N", IH_CX_W, H3_Y + EDGE, IH_SEG, LW)
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner/HE3")
-    _solid("/World/Marks/Inner/HE3/S", IH_CX_E, H3_Y - EDGE, IH_SEG, LW)
-    _solid("/World/Marks/Inner/HE3/N", IH_CX_E, H3_Y + EDGE, IH_SEG, LW)
-
-    # 교차점(0, CY): 실제 도로 교차로 — 차선 마킹 없음 (의도적)
-
-    # ─── 5-d) 정지선 (Stop Lines) ────────────────────────────────────────────
-    # [신규] spawn_stop_lines: 교차로 4방향 진입부마다 굵은 흰색 정지선 1개씩
-    # 위치: 교차로 경계(±CROSS_H)로부터 SL_OFF=0.10 m 바깥쪽
-    # 두께: 0.04 m (일반 차선 0.02 m의 2배, 카메라 검출 라벨 구분)
-    UsdGeom.Scope.Define(stage, "/World/Track/StopLines")
-    SL_OFF = 0.10    # 정지선 → 교차로 경계 오프셋
-    SL_THK = 0.04    # 정지선 두께
-
-    for nm, cx, cy, sx, sy in [
-        ("stop_N", 0.0,               CY + CROSS_H + SL_OFF, TW,    SL_THK),
-        ("stop_S", 0.0,               CY - CROSS_H - SL_OFF, TW,    SL_THK),
-        ("stop_E", CROSS_H + SL_OFF,  CY,                    SL_THK, TW   ),
-        ("stop_W", -(CROSS_H + SL_OFF), CY,                  SL_THK, TW   ),
-    ]:
-        _box(stage, f"/World/Track/StopLines/{nm}",
-             cx, cy, MZ, sx, sy, MH,
-             "mk_white", WHITE, rough=0.4, emit=EW)
-
-    # 5-e) 교차로 내부 점선 — 1차선 전환으로 제거 (점선 없음 정책)
+    # 5-c) 내부 십자 도로 차선 마킹 — 제거됨 (교차로 없는 단순 루프 트랙)
+    # 5-d) 정지선 — 제거됨
 
     # ─── 6) 슬라롬 장애물 큐브 (Top 직선) ───────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Obstacles")
@@ -669,10 +584,8 @@ def build_scene():
              ox, oy, OBH / 2, 0.15, 0.15, OBH,
              "obs_cube", WHITE, phys=True)
 
-    # ── Left 직선 장애물: y 간격 3.0 m, 지그재그 3개 (x축 좌우 교차)
-    # 도로 중심 x=LX=-1.80, 장애물을 동서로 번갈아 배치
+    # ── Left 직선 장애물: ObsL0 제거 (lane 밖), ObsL1·ObsL2만 유지
     for pname, ox, oy in [
-        ("ObsL0", LX + LANE * 0.60, -3.0),   # 내측(동)
         ("ObsL1", LX - LANE * 0.60,  0.0),   # 외측(서)
         ("ObsL2", LX + LANE * 0.60, +3.0),   # 내측(동)
     ]:
@@ -683,24 +596,17 @@ def build_scene():
     # ─── 7) QIV 터널 — 제거됨
 
     # ─── 완료 로그 ──────────────────────────────────────────────────────────
-    print("[INFO] AutoRace 트랙 구성 완료 (v7 — 1차선, 6×12 m)")
-    print(f"  바닥판 : 6.0 × 12.0 m")
+    print("[INFO] AutoRace 트랙 구성 완료 (v8 — 단순 루프)")
     print(f"  루프   : {BL:.1f} × {VL:.1f} m, 코너 R={R_CORNER:.2f} m")
-    print(f"  도로폭 : {TW:.2f} m  (TB3 0.14 + 장애물 0.20 + 여유 0.10 m)")
-    print(f"  차선   : 좌측·우측 실선 2줄 (간격 {EDGE*2:.2f} m, 점선 없음)")
-    print(f"  정지선 : N/S/E/W 각 1개, 교차로 경계+{SL_OFF:.2f}m, 두께 {SL_THK:.2f}m")
-    print(f"  교차점 : (0, {CY:.2f}) — 4-way, CROSS_H={CROSS_H:.2f} m")
-    print(f"  내부망 : 기존 HW/HE(y=0) + H2(y={H2_Y:.1f}) + H3(y={H3_Y:.1f}) 추가")
-    print(f"  장애물 : Top x=±1.0 m 3개 | Left y=-3/0/+3 m 3개 (지그재그)")
+    print(f"  도로폭 : {TW:.2f} m")
+    print(f"  차선   : 좌측·우측 실선 2줄 (간격 {EDGE*2:.2f} m)")
+    print(f"  Bottom : y={BY:.2f}  (로봇 USD 원점에 맞춤)")
+    print(f"  장애물 : Top x=±1.0 m 3개 | Left y 지그재그 3개")
 
-    # ─── 로봇 시작 위치 배치 ─────────────────────────────────────────────────
+    # ─── 로봇 위치 확인 (USD 원점 고정, SetTranslate 비호환) ──────────────────
     _robot_prim = stage.GetPrimAtPath(_ROBOT_PATH)
     if _robot_prim.IsValid():
-        UsdGeom.XformCommonAPI(_robot_prim).SetTranslate(
-            Gf.Vec3d(0.2261, -5.0052, 0.0)
-        )
-        print(f"[INFO] 로봇 배치: {_ROBOT_PATH}")
-        print(f"         위치 (0.2261, -5.0052, 0.0)")
+        print(f"[INFO] 로봇 확인: {_ROBOT_PATH} (USD 원점 ≈ 0.01, {BY:.2f})")
     else:
         print(f"[WARN] 로봇 프림 미발견: {_ROBOT_PATH}")
 

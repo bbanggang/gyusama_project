@@ -256,8 +256,8 @@ Isaac Sim 터미널에서 `source /opt/ros/jazzy/setup.bash` 실행 시 `LD_LIBR
 - [x] `use_sim_time=True` 로 RViz2 clock 동기화 ("queue is full" 해결)
 - [x] Static TF `base_link → camera_rgb_optical_frame` 발행
 - [x] 합성 데이터 생성 카메라 FOV를 IMX219 정확 값으로 수정 (90° → 62.2°)
-- [ ] **이미지 90° 회전 수정 최종 확인** — `SetRotate(0°, -90°, -90°)` 재시작 후 검증 필요
-- [ ] `/scan` + `/camera/image_raw` 동시 발행 정상 동작 확인
+- [x] **이미지 90° 회전 수정 최종 확인** — `SetRotate(75°, 0°, -90°)` 적용, up=+Z 보정 완료 (np.rot90 불필요)
+- [x] `/scan` + `/camera/image_raw` 동시 발행 정상 동작 확인
 
 ---
 
@@ -325,14 +325,94 @@ data/synthetic/
 └── dataset.yaml               ← nc=2 (white_lane, stop_line)
 ```
 
-### 8-3. YOLOv8 학습 스크립트 (준비 완료)
+### 8-3. YOLOv8 학습 스크립트 (완료)
 
-**파일**: `data/train_yolo_lane.py`
+**파일**: `models/train_yolo_lane.py`
 
-합성 데이터로 YOLOv8-seg 모델을 학습하는 스크립트.
-학습 완료 후 모델은 `/camera/image_raw` 구독 → 차선 마스크 + 정지선 검출에 사용 예정.
+합성 데이터로 YOLOv8-seg 모델을 학습하고 ONNX로 추출하는 스크립트.
+
+```bash
+# 합성 데이터 생성 (Isaac Sim 필요)
+/home/linux/isaac_env/bin/python isaac_sim/generate_synthetic_data.py
+
+# YOLO 학습 (CUDA GPU)
+python3 models/train_yolo_lane.py --epochs 100 --batch 16
+
+# 출력
+# models/runs/lane_seg_<v>/weights/best.pt   ← PyTorch 가중치
+# models/runs/lane_seg_<v>/weights/best.onnx ← ONNX 추론 모델
+```
 
 ### 8-4. 슬라롬 장애물 환경 (구현 완료)
 
 트랙에 장애물 6개 배치 완료 (Top 직선 3개, Left 직선 3개 지그재그).
-카메라로 장애물 인식 후 회피하는 비전 기반 제어로 확장 예정.
+
+---
+
+### 8-5. YOLOv8 ONNX 추론 기반 차선 추종 노드 (구현 완료)
+
+**파일**: `models/inference_node/lane_detect.py`
+
+`/camera/image_raw` 를 구독하여 YOLO ONNX 모델로 차선·정지선을 검출하고
+`/cmd_vel` 을 발행하는 독립 ROS2 노드. LiDAR `/scan` 을 병용하여 장애물도 회피한다.
+
+#### 파이프라인
+
+```
+Isaac Sim (run_track_sim.py)
+  ├── /camera/image_raw  ─────────────────────────────┐
+  └── /scan              ──────────────────────────┐  │
+                                                   ▼  ▼
+                              lane_detect.py  (이 노드)
+                                ├── YOLO ONNX 추론
+                                │     ├── white_lane 마스크 → 차선 중심 오프셋
+                                │     └── stop_line  마스크 → 정지선 감지
+                                ├── LiDAR 장애물 거리 판단
+                                ├── 5-상태 머신 (LANE/WARN/AVOID/STOP_OBS/STOP_LINE)
+                                └── /cmd_vel  발행
+```
+
+#### 핵심 구현
+
+```python
+# YOLOv8-seg ONNX 출력 디코딩
+# output0: [1, 38, 8400]  (4_bbox + 2_cls + 32_coeff)
+# output1: [1, 32, 160, 160]  (proto 마스크)
+mc      = mask_coeff[:, valid_idx].T            # (N, 32)
+raw     = sigmoid(mc @ protos.reshape(32, -1))  # (N, 160×160)
+raw     = raw.reshape(-1, 160, 160)             # (N, 160, 160)
+
+# 차선 중심 오프셋 (이미지 하단 ROI)
+cx     = np.mean(xs)                          # 흰선 픽셀 무게중심
+offset = (cx - IMG_W/2) / (IMG_W/2)          # normalized [-1, 1]
+angular = -Kp * offset                         # 비례 제어
+```
+
+#### 폴백 모드
+
+ONNX 모델(`best.onnx`)이 없으면 그레이스케일 임계값(> 200)으로 흰 픽셀을 검출하는
+폴백 모드로 자동 전환한다. 학습 전에도 노드를 실행하여 카메라·통신 연결을 확인할 수 있다.
+
+#### 실행
+
+```bash
+# 터미널 1 (Isaac Sim)
+ENABLE_CAMERA=1 bash isaac_sim/launch_sim.sh
+
+# 터미널 2 (추론 노드)
+source /home/linux/gyusama-project/isaac_sim/ros2_terminal.sh
+python3 models/inference_node/lane_detect.py
+
+# 터미널 3 (시각화)
+ros2 run rqt_image_view rqt_image_view  # /lane/debug_image 선택
+```
+
+#### /lane/debug_image 예시
+
+| 색상 | 의미 |
+|------|------|
+| 초록 오버레이 | white_lane 마스크 |
+| 빨강 오버레이 | stop_line 마스크 |
+| 노란 수직선 | 차선 무게중심 위치 |
+| 흰 수직선 | 이미지 중심 (기준) |
+| 텍스트 | 현재 상태 + 오프셋 값 |
