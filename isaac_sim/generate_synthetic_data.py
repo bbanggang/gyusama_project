@@ -53,7 +53,7 @@ VAL_RATIO = 0.2
 CAMERA_H  = 0.12  # m (TurtleBot3 카메라 높이)
 PITCH_DEG = -15.0 # 카메라 앞쪽 하향 경사 (도)
 MIN_MASK_AREA  = 8    # 유효 마스크 최소 픽셀 면적
-LANE_WHITE_THR = 180  # 차선 마킹 흰색 임계값 (R,G,B 모두 이 값 이상)
+LANE_WHITE_THR = int(os.environ.get("LANE_WHITE_THR", "150"))  # 차선 마킹 흰색 임계값
 
 for split in ("train", "val"):
     os.makedirs(os.path.join(OUT_DIR, "images", split), exist_ok=True)

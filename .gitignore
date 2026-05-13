@@ -4,6 +4,15 @@ log/
 __pycache__/
 *.pyc
 .venv/
+.venv_train/
 *.egg-info/
 .DS_Store
 *.swp
+*.pt
+*.onnx
+data/synthetic/images/
+data/synthetic/labels/
+data/synthetic/preview/
+models/runs/
+frames_*.gv
+frames_*.pdf

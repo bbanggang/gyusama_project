@@ -152,15 +152,15 @@ python3 scripts/analyze_training.py
 
 ## 3. 완료 기준 체크리스트
 
-- [ ] `generate_synthetic_data.py` 실행 완료 — 500장 이미지 생성 확인
-- [ ] `verify_dataset.py` 통과 — train 400장 / val 100장, 레이블 파일 1:1 대응
-- [ ] `train_yolo_lane.py` 학습 완료 — `best.pt` + `best.onnx` 생성
-- [ ] val mAP50 ≥ 0.80 달성
+- [x] `generate_synthetic_data.py` 실행 완료 — 1000장 이미지 생성 확인 (train 800 / val 200)
+- [x] `verify_dataset.py` 통과 — train 800장 / val 200장, 레이블 파일 1:1 대응
+- [x] `train_yolo_lane.py` 학습 완료 — `best.pt` + `best.onnx` 생성 (yolov8s-seg, 100 epoch)
+- [x] `analyze_training.py` 실행 — 손실·정밀도 그래프 저장
+- [ ] val mAP50 ≥ 0.80 달성 — 현재 best 0.716 (Precision 0.930 / Recall 0.689), 통합 테스트 후 필요 시 개선
 - [ ] `lane_detect.py` ONNX 모드 실행 확인 (폴백 메시지 없음)
 - [ ] `/lane/debug_image`에서 차선 마스크 시각화 정상 확인
 - [ ] 로봇이 트랙 내에서 차선 추종 동작 확인 (`/cmd_vel` 변화 확인)
 - [ ] 차선 중앙 유지 및 조향 반응 확인
-- [ ] `analyze_training.py` 실행 — 손실·정밀도 그래프 저장
 
 ---
 
@@ -171,17 +171,25 @@ Isaac Sim 터미널과 ROS2 터미널을 반드시 분리한다.
 Isaac Sim 터미널에서 `source /opt/ros/jazzy/setup.bash`를 실행하면
 `LD_LIBRARY_PATH` 오염으로 segfault가 발생한다.
 
+### Python 환경 분리 필수
+Isaac Sim(`isaac_env`)은 numpy==1.26을 요구한다.
+YOLOv8 학습에 ultralytics를 설치하면 numpy 2.x로 업그레이드되어 Isaac Sim annotator가 깨진다.
+반드시 별도 venv에서 학습을 실행한다.
+```bash
+# 학습용 venv (프로젝트에 이미 생성됨)
+.venv_train/bin/python models/train_yolo_lane.py
+
+# Isaac Sim 데이터 생성 (isaac_env 사용)
+/home/linux/isaac_env/bin/python isaac_sim/generate_synthetic_data.py
+```
+
 ### ONNX Runtime CUDA 가속
 `lane_detect.py`는 `CUDAExecutionProvider`를 우선 사용한다.
-ONNX Runtime GPU 버전이 설치되어 있어야 한다.
-```bash
-pip install onnxruntime-gpu
-```
-미설치 시 CPU 폴백으로 자동 전환되나 처리 지연이 발생한다.
+`.venv_train`에 `onnxruntime-gpu`가 설치되어 있다.
 
 ### 합성 데이터 재생성 조건
 모델 성능이 목표치 미달인 경우 데이터를 늘려 재생성한다.
-`generate_synthetic_data.py`의 `N_TOTAL` 값을 1000으로 변경 후 재실행.
+환경변수로 제어: `N_TOTAL=2000 LANE_WHITE_THR=150 /home/linux/isaac_env/bin/python ...`
 
 ---
 
