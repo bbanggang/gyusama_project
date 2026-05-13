@@ -164,14 +164,16 @@ def build_scene():
     omni.kit.commands.execute(
         "AddGroundPlaneCommand", stage=stage, planePath="/World/GroundPlane",
         axis="Z", size=30.0, position=Gf.Vec3f(0, 0, 0),
-        color=Gf.Vec3f(0.20, 0.20, 0.20),
+        color=Gf.Vec3f(0.02, 0.02, 0.02),  # 거의 검정 — 아스팔트 트랙과 일치
     )
 
     # 조명 — 기준값 (루프 내에서 강도만 조정)
+    # 원래 DomeLight=600 / RectLight=28000 이 과다하여 이미지가 전부 흰색으로 날아감.
+    # 낮춘 값: DomeLight 50~200, RectLight 1000~5000 → 어두운 아스팔트 + 밝은 마킹 대비 확보.
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-    dome.CreateIntensityAttr(600.0)
+    dome.CreateIntensityAttr(120.0)
     rect = UsdLux.RectLight.Define(stage, "/World/RectLight")
-    rect.CreateIntensityAttr(28000.0)
+    rect.CreateIntensityAttr(3000.0)
     rect.CreateWidthAttr(8.0); rect.CreateHeightAttr(14.0)
     UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 8))
     UsdGeom.XformCommonAPI(rect).SetRotate(Gf.Vec3f(-90, 0, 0))
@@ -326,33 +328,42 @@ def get_track_waypoints():
     return pts
 
 
-# ─── RGB 이미지 → YOLO 레이블 변환 ───────────────────────────────────────────
-def rgb_to_yolo_lines(img_bgr: np.ndarray) -> list[str]:
+# ─── RGB 이미지 → YOLOv8-detect 레이블 변환 ──────────────────────────────────
+def rgb_to_detect_lines(img_bgr: np.ndarray) -> list[str]:
     """
-    BGR 이미지에서 흰색 픽셀(차선 마킹)을 추출하여 YOLOv8-seg 레이블을 생성한다.
-    시맨틱 어노테이터 없이 RGB 임계값만으로 동작하므로 버전 의존성이 없다.
+    BGR 이미지에서 흰색 픽셀(차선 마킹)을 추출하여 YOLOv8-detect 레이블을 생성한다.
+    이미지를 좌/우로 절반 분할하여 각각의 bbox를 독립 객체로 출력한다.
+      - 좌측 bbox: 이미지 왼쪽 절반의 흰색 픽셀 영역 → class 0 (left lane)
+      - 우측 bbox: 이미지 오른쪽 절반의 흰색 픽셀 영역 → class 0 (right lane)
 
-    - 차선 마킹: 흰색(R,G,B > LANE_WHITE_THR) → class 0 (lane)
+    추론 시 좌/우 bbox 중심의 x 좌표 평균이 로봇의 목표 경로 중심이 된다.
     """
-    # 흰색 마스크: B, G, R 채널 모두 임계값 초과
-    mask = np.all(img_bgr > LANE_WHITE_THR, axis=2).astype(np.uint8) * 255
-
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    lines = []
     h, w = img_bgr.shape[:2]
-    for cnt in cnts:
-        if cv2.contourArea(cnt) < MIN_MASK_AREA:
+    roi_top = int(h * LANE_ROI_TOP_RATIO)  # ROI: 하단 45% 만 사용
+
+    # 흰색 마스크: 전체 이미지
+    full_mask = np.all(img_bgr > LANE_WHITE_THR, axis=2)
+
+    lines = []
+    for x_start, x_end in [(0, w // 2), (w // 2, w)]:
+        half = full_mask[roi_top:, x_start:x_end]
+        ys, xs = np.where(half)
+        if xs.size < MIN_MASK_AREA:
             continue
-        eps    = max(0.005 * cv2.arcLength(cnt, True), 0.5)
-        approx = cv2.approxPolyDP(cnt, eps, True)
-        if len(approx) < 3:
-            continue
-        pts_norm = np.clip(
-            approx.reshape(-1, 2) / np.array([w, h], dtype=np.float32), 0.0, 1.0
-        )
-        flat = " ".join(f"{v:.6f}" for v in pts_norm.flatten())
-        lines.append(f"0 {flat}")   # class 0 = lane
+        min_x_h = int(xs.min()) + x_start
+        max_x_h = int(xs.max()) + x_start
+        min_y_h = int(ys.min()) + roi_top
+        max_y_h = int(ys.max()) + roi_top
+
+        cx = (min_x_h + max_x_h) / 2 / w
+        cy = (min_y_h + max_y_h) / 2 / h
+        bw = (max_x_h - min_x_h) / w
+        bh = (max_y_h - min_y_h) / h
+        lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
     return lines
+
+
+LANE_ROI_TOP_RATIO = 0.55  # ROI 상단 비율 (상위 55% 무시)
 
 
 # ─── 메인 ────────────────────────────────────────────────────────────────────
@@ -427,12 +438,12 @@ def main():
         xf.SetTranslate(Gf.Vec3d(rx, ry, rz_cam))
         xf.SetRotate(Gf.Vec3f(90.0 + pitch_deg, 0.0, yaw_deg - 90.0))
 
-        # 조명 도메인 랜덤화
+        # 조명 도메인 랜덤화 (어두운 아스팔트 vs 흰 마킹 대비 유지 범위)
         UsdLux.DomeLight(dome_prim).CreateIntensityAttr().Set(
-            random.uniform(350, 900)
+            random.uniform(50, 200)
         )
         UsdLux.RectLight(rect_prim).CreateIntensityAttr().Set(
-            random.uniform(18000, 40000)
+            random.uniform(1000, 5000)
         )
 
         # 렌더 파이프라인 실행 — rep.orchestrator.step() 으로 annotator 데이터 갱신
@@ -450,7 +461,7 @@ def main():
             continue
 
         img_bgr    = cv2.cvtColor(img_rgba[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2BGR)
-        yolo_lines = rgb_to_yolo_lines(img_bgr)
+        yolo_lines = rgb_to_detect_lines(img_bgr)
 
         stem    = f"{idx:05d}"
         img_dir = os.path.join(OUT_DIR, "images", split)
