@@ -43,10 +43,10 @@ IMG_W, IMG_H = 640, 480
 YOLO_SZ      = 640   # ONNX 입력 크기
 
 # ─── YOLOv8-seg 클래스 인덱스 ──────────────────────────────────────────────────
-CLS_WHITE_LANE = 0
-CLS_STOP_LINE  = 1
-CONF_THRESH    = 0.35   # 검출 신뢰도 임계값
-MASK_THRESH    = 0.50   # 세그멘테이션 마스크 이진화 임계값
+# nc=1: 차선(lane) 단일 클래스 — 차선인가 아닌가 2값 분류
+CLS_LANE    = 0
+CONF_THRESH = 0.35   # 검출 신뢰도 임계값
+MASK_THRESH = 0.50   # 세그멘테이션 마스크 이진화 임계값
 
 # ─── 제어 파라미터 ─────────────────────────────────────────────────────────────
 MAX_SPEED     = 0.12   # 정상 직진 속도 (m/s)
@@ -118,7 +118,7 @@ class YoloSegDetector:
         pred   = outs[0][0]            # (38, 8400)
         protos = outs[1][0]            # (32, 160, 160)
 
-        nc = 2   # white_lane, stop_line
+        nc = 1   # lane 단일 클래스
         boxes      = pred[:4]          # (4, 8400) cx cy w h
         cls_confs  = pred[4:4+nc]      # (nc, 8400)
         mask_coeff = pred[4+nc:]       # (32, 8400)
@@ -131,8 +131,7 @@ class YoloSegDetector:
         valid_idx   = np.where(valid_mask)[0]
 
         h_orig, w_orig = bgr.shape[:2]
-        combined = {CLS_WHITE_LANE: np.zeros((h_orig, w_orig), dtype=bool),
-                    CLS_STOP_LINE:  np.zeros((h_orig, w_orig), dtype=bool)}
+        combined = {CLS_LANE: np.zeros((h_orig, w_orig), dtype=bool)}
 
         if valid_idx.size == 0:
             return combined
@@ -325,36 +324,20 @@ class LaneDetectNode(Node):
 
         now = time.time()
 
-        # ── 1) 차선/정지선 마스크 획득 ─────────────────────────────────────────
+        # ── 1) 차선 마스크 획득 (lane 단일 클래스) ────────────────────────────
         if self.detector is not None:
-            masks = self.detector.infer(bgr)
-            lane_mask      = masks[CLS_WHITE_LANE]
-            stop_line_mask = masks[CLS_STOP_LINE]
+            masks     = self.detector.infer(bgr)
+            lane_mask = masks[CLS_LANE]
         else:
-            lane_mask      = fallback_lane_mask(bgr)
-            stop_line_mask = np.zeros((IMG_H, IMG_W), dtype=bool)
+            lane_mask = fallback_lane_mask(bgr)
 
-        # ── 2) 정지선 감지 ─────────────────────────────────────────────────────
-        stop_pixels = int(np.sum(stop_line_mask))
-        elapsed_since_start = now - self._start_time
-        cooldown_ok = (now - self._last_stop_time) > STOP_COOLDOWN
-        startup_ok  = elapsed_since_start > STARTUP_DELAY
-
-        if (stop_pixels > STOP_MIN_PIXELS and startup_ok and cooldown_ok
-                and now >= self._stop_until):
-            self.get_logger().info(
-                f"정지선 감지 ({stop_pixels}px) — {STOP_DURATION}초 정지"
-            )
-            self._stop_until      = now + STOP_DURATION
-            self._last_stop_time  = now
-
-        # ── 3) 정지 중이면 속도 0 발행 ────────────────────────────────────────
+        # ── 2) 정지 중이면 속도 0 발행 ─────────────────────────────────────────
         if now < self._stop_until:
             self._publish_cmd(0.0, 0.0)
-            self._publish_debug(bgr, lane_mask, stop_line_mask, 0.0, "STOP_LINE")
+            self._publish_debug(bgr, lane_mask, 0.0, "STOP_LINE")
             return
 
-        # ── 4) LiDAR 장애물 판단 ──────────────────────────────────────────────
+        # ── 3) LiDAR 장애물 판단 ──────────────────────────────────────────────
         obs_state, avoid_dir = 'clear', None
         if self._scan_ranges is not None:
             obs_state, avoid_dir = scan_obstacle_state(
@@ -364,10 +347,10 @@ class LaneDetectNode(Node):
             self._avoid_dir_lock = avoid_dir
             ang = float(self._avoid_dir_lock or 1) * MAX_ANGULAR
             self._publish_cmd(0.0, ang)
-            self._publish_debug(bgr, lane_mask, stop_line_mask, ang, "STOP_OBS")
+            self._publish_debug(bgr, lane_mask, ang, "STOP_OBS")
             return
 
-        # ── 5) 차선 중심 오프셋 계산 ─────────────────────────────────────────
+        # ── 4) 차선 중심 오프셋 계산 ─────────────────────────────────────────
         offset = compute_lane_offset(lane_mask)
 
         if obs_state == 'avoid':
@@ -378,24 +361,17 @@ class LaneDetectNode(Node):
             label = "AVOID"
         elif obs_state == 'warn':
             self._avoid_dir_lock = None
-            if offset is not None:
-                ang = float(-np.clip(KP_ANGULAR * offset, -MAX_ANGULAR, MAX_ANGULAR))
-            else:
-                ang = 0.0
+            ang   = float(-np.clip(KP_ANGULAR * (offset or 0.0), -MAX_ANGULAR, MAX_ANGULAR))
             speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * 0.5
             label = "WARN"
         else:
             self._avoid_dir_lock = None
-            if offset is not None:
-                ang = float(-np.clip(KP_ANGULAR * offset, -MAX_ANGULAR, MAX_ANGULAR))
-            else:
-                ang = 0.0
+            ang   = float(-np.clip(KP_ANGULAR * (offset or 0.0), -MAX_ANGULAR, MAX_ANGULAR))
             speed = MAX_SPEED
             label = "LANE"
 
         self._publish_cmd(speed, ang)
-        self._publish_debug(bgr, lane_mask, stop_line_mask,
-                            offset if offset else 0.0, label)
+        self._publish_debug(bgr, lane_mask, offset if offset else 0.0, label)
 
     # ── 발행 헬퍼 ─────────────────────────────────────────────────────────────
 
@@ -406,7 +382,7 @@ class LaneDetectNode(Node):
         self.cmd_pub.publish(msg)
 
     def _publish_debug(self, bgr: np.ndarray, lane_mask: np.ndarray,
-                       stop_mask: np.ndarray, offset: float, label: str):
+                       offset: float, label: str):
         """차선 마스크 오버레이 + 상태 텍스트를 /lane/debug_image 로 발행."""
         if self.dbg_pub.get_subscription_count() == 0:
             return  # 구독자 없으면 렌더링 생략
@@ -414,10 +390,8 @@ class LaneDetectNode(Node):
         import cv2
         vis = bgr.copy()
 
-        # 흰선 오버레이 (초록)
-        vis[lane_mask]  = (vis[lane_mask]  * 0.4 + np.array([0, 255, 0])   * 0.6).astype(np.uint8)
-        # 정지선 오버레이 (빨강)
-        vis[stop_mask]  = (vis[stop_mask]  * 0.4 + np.array([0, 0,   255]) * 0.6).astype(np.uint8)
+        # 차선 오버레이 (초록)
+        vis[lane_mask] = (vis[lane_mask] * 0.4 + np.array([0, 255, 0]) * 0.6).astype(np.uint8)
 
         # 오프셋 중심선
         cx = int(IMG_W / 2 + offset * IMG_W / 2)

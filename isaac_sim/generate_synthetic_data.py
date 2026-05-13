@@ -47,17 +47,21 @@ except ImportError:
 ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "data", "synthetic")
 IMG_W, IMG_H = 640, 480
-N_TOTAL   = 500   # 총 생성 이미지 수
+# N_TOTAL 환경변수로 재정의 가능: N_TOTAL=10 python generate_synthetic_data.py
+N_TOTAL   = int(os.environ.get("N_TOTAL", "500"))
 VAL_RATIO = 0.2
 CAMERA_H  = 0.12  # m (TurtleBot3 카메라 높이)
 PITCH_DEG = -15.0 # 카메라 앞쪽 하향 경사 (도)
-MIN_MASK_AREA = 8  # 유효 마스크 최소 픽셀 면적
+MIN_MASK_AREA  = 8    # 유효 마스크 최소 픽셀 면적
+LANE_WHITE_THR = 180  # 차선 마킹 흰색 임계값 (R,G,B 모두 이 값 이상)
 
 for split in ("train", "val"):
     os.makedirs(os.path.join(OUT_DIR, "images", split), exist_ok=True)
     os.makedirs(os.path.join(OUT_DIR, "labels", split), exist_ok=True)
 
-CLASS_NAMES = ["white_lane", "stop_line"]
+# 단일 클래스: 차선(lane) — 흰색 픽셀 임계값으로 RGB 이미지에서 직접 추출
+# 차선인가 아닌가 2값 분류이므로 stop_line 별도 레이블 불필요
+CLASS_NAMES = ["lane"]
 
 # ─── 트랙 파라미터 (run_track_sim.py 동일) ────────────────────────────────────
 LANE = 0.22; TW = LANE * 2; LW = 0.02; EDGE = LANE - LW / 2
@@ -322,39 +326,32 @@ def get_track_waypoints():
     return pts
 
 
-# ─── 세그먼테이션 → YOLO 변환 ──────────────────────────────────────────────────
-def seg_to_yolo_lines(seg_output: dict) -> list[str]:
-    """Replicator 시맨틱 출력 → YOLOv8-seg 레이블 줄 목록."""
-    data        = seg_output.get("data")         # (H, W) uint32
-    id_to_labels = seg_output.get("info", {}).get("idToLabels", {})
+# ─── RGB 이미지 → YOLO 레이블 변환 ───────────────────────────────────────────
+def rgb_to_yolo_lines(img_bgr: np.ndarray) -> list[str]:
+    """
+    BGR 이미지에서 흰색 픽셀(차선 마킹)을 추출하여 YOLOv8-seg 레이블을 생성한다.
+    시맨틱 어노테이터 없이 RGB 임계값만으로 동작하므로 버전 의존성이 없다.
 
-    if data is None or data.size == 0:
-        return []
+    - 차선 마킹: 흰색(R,G,B > LANE_WHITE_THR) → class 0 (lane)
+    """
+    # 흰색 마스크: B, G, R 채널 모두 임계값 초과
+    mask = np.all(img_bgr > LANE_WHITE_THR, axis=2).astype(np.uint8) * 255
 
-    sem_id_to_class: dict[int, int] = {}
-    for sid_str, label_dict in id_to_labels.items():
-        lbl = label_dict.get("class", "")
-        if lbl == "white_lane":
-            sem_id_to_class[int(sid_str)] = 0
-        elif lbl == "stop_line":
-            sem_id_to_class[int(sid_str)] = 1
-
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     lines = []
-    for sem_id, class_id in sem_id_to_class.items():
-        mask = (data == sem_id).astype(np.uint8) * 255
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in cnts:
-            if cv2.contourArea(cnt) < MIN_MASK_AREA:
-                continue
-            eps   = max(0.01 * cv2.arcLength(cnt, True), 0.5)
-            approx = cv2.approxPolyDP(cnt, eps, True)
-            if len(approx) < 3:
-                continue
-            pts_norm = np.clip(
-                approx.reshape(-1, 2) / np.array([IMG_W, IMG_H]), 0.0, 1.0
-            )
-            flat = " ".join(f"{v:.6f}" for v in pts_norm.flatten())
-            lines.append(f"{class_id} {flat}")
+    h, w = img_bgr.shape[:2]
+    for cnt in cnts:
+        if cv2.contourArea(cnt) < MIN_MASK_AREA:
+            continue
+        eps    = max(0.005 * cv2.arcLength(cnt, True), 0.5)
+        approx = cv2.approxPolyDP(cnt, eps, True)
+        if len(approx) < 3:
+            continue
+        pts_norm = np.clip(
+            approx.reshape(-1, 2) / np.array([w, h], dtype=np.float32), 0.0, 1.0
+        )
+        flat = " ".join(f"{v:.6f}" for v in pts_norm.flatten())
+        lines.append(f"0 {flat}")   # class 0 = lane
     return lines
 
 
@@ -369,35 +366,42 @@ def main():
 
     # 가상 카메라 — IMX219 파라미터 (run_track_sim.py 의 실제 카메라와 일치)
     # 3.04 mm 렌즈 + 1/4" 센서(3.68×2.76 mm) → H-FOV ≈ 62.2°, V-FOV ≈ 48.8°
-    # Sim-to-Real 도메인 갭 최소화를 위해 실제 카메라와 동일 파라미터 사용
+    # rep.create.camera() 는 Isaac Sim 5.1 에서 vertical_aperture 를 지원하지 않으므로
+    # UsdGeom.Camera.Define() 으로 직접 생성한다 (run_track_sim.py 방식과 동일).
     cam_prim_path = "/World/SyntheticCam"
-    cam_item = rep.create.camera(
-        position=(waypoints[0][0], waypoints[0][1], CAMERA_H),
-        look_at=(waypoints[0][0] + 0.5, waypoints[0][1], CAMERA_H - 0.13),
-        focal_length=3.04,
-        horizontal_aperture=3.68,   # ≈ 62.2° HFOV (IMX219 1/4" 센서)
-        vertical_aperture=2.76,
-        clipping_range=(0.01, 10.0),
-    )
-    rp = rep.create.render_product(cam_item, (IMG_W, IMG_H))
+    cam_usd = UsdGeom.Camera.Define(stage, cam_prim_path)
+    cam_usd.CreateFocalLengthAttr(3.04)
+    cam_usd.CreateHorizontalApertureAttr(3.68)
+    cam_usd.CreateVerticalApertureAttr(2.76)
+    cam_usd.CreateClippingRangeAttr(Gf.Vec2f(0.01, 10.0))
 
+    cam_prim = stage.GetPrimAtPath(cam_prim_path)
+    # USD XYZ Euler 변환: SetRotate(a, b, c) = Rz(c)*Ry(b)*Rx(a)
+    # 카메라 -Z 시선 → 전방(yaw)+하방(pitch) 방향으로 보내는 올바른 각도:
+    #   a = 90+pitch_deg  (예: pitch=-15° → a=75°)
+    #   c = yaw_deg - 90
+    # 검증: yaw=0(동), pitch=-15 → SetRotate(75,0,-90) →
+    #   Rz(-90)*Rx(75)*(0,0,-1) = (cos15, 0, -sin15) = 전방+하방15° ✓
+    xf0 = UsdGeom.XformCommonAPI(cam_usd)
+    xf0.SetTranslate(Gf.Vec3d(waypoints[0][0], waypoints[0][1], CAMERA_H))
+    xf0.SetRotate(Gf.Vec3f(90.0 + PITCH_DEG, 0.0, waypoints[0][2] - 90.0))
+
+    for _ in range(5):
+        simulation_app.update()
+
+    rp = rep.create.render_product(cam_prim_path, (IMG_W, IMG_H))
+
+    # RGB annotator 만 사용 — 시맨틱 어노테이터 불필요 (RGB 임계값으로 직접 레이블 생성)
     rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
-    seg_annot = rep.AnnotatorRegistry.get_annotator(
-        "semantic_segmentation", init_params={"colorize": False}
-    )
     rgb_annot.attach([rp])
-    seg_annot.attach([rp])
 
-    # 카메라 프림 경로 확인 (rep.create.camera 가 생성하는 실제 경로 획득)
-    cam_prim = None
-    for p in stage.TraverseAll():
-        if p.IsA(UsdGeom.Camera) and p.GetPath().pathString != "/OmniverseKit_Persp":
-            cam_prim = p
-            break
-    if cam_prim is None:
-        raise RuntimeError("[ERROR] 카메라 프림을 찾지 못했습니다.")
-    cam_path = cam_prim.GetPath().pathString
-    print(f"[INFO] 카메라 프림: {cam_path}")
+    # headless 모드에서 Replicator 파이프라인 초기화
+    # simulation_app.update() 만으로는 annotator 데이터가 채워지지 않으므로
+    # rep.orchestrator.step() 으로 실제 렌더 파이프라인을 명시적으로 실행한다.
+    for _ in range(3):
+        rep.orchestrator.step(pause_timeline=False)
+
+    print(f"[INFO] 카메라 프림: {cam_prim_path}")
 
     dome_prim = stage.GetPrimAtPath("/World/DomeLight")
     rect_prim = stage.GetPrimAtPath("/World/RectLight")
@@ -417,17 +421,11 @@ def main():
         yaw_deg = wp[2] + random.uniform(-8.0, 8.0)
         pitch_deg = PITCH_DEG + random.uniform(-5.0, 5.0)
 
-        heading_rad = math.radians(yaw_deg)
-        fwd_dist = 0.5
-        lx = rx + fwd_dist * math.cos(heading_rad)
-        ly = ry + fwd_dist * math.sin(heading_rad)
-        lz = rz_cam + fwd_dist * math.tan(math.radians(pitch_deg))
-
-        # 카메라 위치 업데이트
+        # 카메라 위치·방향 업데이트
+        # SetRotate(90+pitch, 0, yaw-90): USD XYZ Euler 에서 올바른 전방+하방 시선
         xf = UsdGeom.XformCommonAPI(cam_prim)
         xf.SetTranslate(Gf.Vec3d(rx, ry, rz_cam))
-        # look_at 은 별도 SetRotate 로 근사 (pitch + yaw)
-        xf.SetRotate(Gf.Vec3f(pitch_deg, 0.0, yaw_deg))
+        xf.SetRotate(Gf.Vec3f(90.0 + pitch_deg, 0.0, yaw_deg - 90.0))
 
         # 조명 도메인 랜덤화
         UsdLux.DomeLight(dome_prim).CreateIntensityAttr().Set(
@@ -437,21 +435,22 @@ def main():
             random.uniform(18000, 40000)
         )
 
-        # 렌더 업데이트 (2회 이상 필요)
-        for _ in range(3):
-            simulation_app.update()
+        # 렌더 파이프라인 실행 — rep.orchestrator.step() 으로 annotator 데이터 갱신
+        rep.orchestrator.step(pause_timeline=False)
 
-        # 데이터 수집
+        # RGB 데이터 수집
         rgb_data = rgb_annot.get_data()
-        seg_data = seg_annot.get_data()
 
-        if rgb_data is None or rgb_data.get("data") is None:
-            print(f"[WARN] {idx}: RGB 데이터 없음, 건너뜀")
+        if rgb_data is None:
+            continue  # 데이터 없음: 건너뜀
+
+        # Isaac Sim 버전에 따라 dict 또는 ndarray 직접 반환
+        img_rgba = rgb_data.get("data") if isinstance(rgb_data, dict) else rgb_data
+        if img_rgba is None or not hasattr(img_rgba, "shape") or img_rgba.shape == (0,):
             continue
 
-        img_rgba  = rgb_data["data"]   # (H, W, 4)
-        img_bgr   = cv2.cvtColor(img_rgba, cv2.COLOR_RGBA2BGR)
-        yolo_lines = seg_to_yolo_lines(seg_data) if seg_data else []
+        img_bgr    = cv2.cvtColor(img_rgba[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2BGR)
+        yolo_lines = rgb_to_yolo_lines(img_bgr)
 
         stem    = f"{idx:05d}"
         img_dir = os.path.join(OUT_DIR, "images", split)
