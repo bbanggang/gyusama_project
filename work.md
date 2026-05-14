@@ -1,5 +1,9 @@
-# gyusama-project 진행 정리 
+# 규사마 프로젝트 진행 정리 (W5~W7)
 
+**팀**: 규사마 | 국립군산대학교 임베디드소프트웨어학과  
+**환경**: Ubuntu 24.04 / ROS2 Jazzy / Isaac Sim 5.1.0 / RTX 5070 Ti / TurtleBot3 (RPi5)
+
+---
 
 ## W5 — Isaac Sim 가상 카메라 연동
 
