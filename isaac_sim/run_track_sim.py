@@ -124,7 +124,7 @@ _CAM_HT   = 480     # 발행 해상도 (세로)
 _CAM_OFZ  = 0.12    # 카메라 높이 오프셋 [m]  (로봇 기준)
 _CAM_OFX  = 0.05    # 카메라 전방 오프셋 [m]  (로봇 기준)
 _CAM_TILT = -15.0   # 하방 경사 [deg]
-_CAM_HZ   = 10      # /camera/image_raw 발행 주기 [Hz]  (시뮬 60 Hz 분주)
+_CAM_HZ   = 20      # /camera/image_raw 발행 주기 [Hz]  (시뮬 60 Hz 분주)
 
 
 def _setup_cam_bridge(stage):
@@ -339,7 +339,8 @@ def build_scene():
 
     # ── 기본 치수
     # 1차선: TurtleBot3 Burger 폭(0.14 m) + 카메라 시야 확보 여유
-    LANE = 0.30          # 도로 반폭 (TW / 2)
+    # 0.20→0.13: 차선이 카메라 이미지 중앙 쪽으로 더 이동
+    LANE = 0.16          # 도로 반폭 (TW / 2)  0.15→0.16
     TW   = LANE * 2      # 도로 총 폭 = 0.44 m
     LW   = 0.02          # 차선 마킹 폭
     EDGE = LANE - LW / 2 # 도로 중심→차선 중심 = 0.21 m
@@ -360,9 +361,9 @@ def build_scene():
     VL = abs(TY - BY)    # = 10.00 m
 
     # ── 코너 아크 반지름 (1차선: 내측·외측 2개만 사용, 중앙선 없음)
-    R_CORNER = TW                  # = 0.44 m  (도로 중심선 코너 아크 반지름)
-    R_IN     = R_CORNER - EDGE     # = 0.23 m  (내측 차선 아크)
-    R_OUT    = R_CORNER + EDGE     # = 0.65 m  (외측 차선 아크)
+    R_CORNER = TW                  # 도로 중심선 코너 아크 반지름
+    R_IN     = R_CORNER - EDGE     # 내측 차선 아크
+    R_OUT    = R_CORNER + EDGE     # 외측 차선 아크
 
     # ── R_CORNER 코너를 수용하기 위한 직선 구간 축소
     BL_inner = BL - 2 * R_CORNER  # = 2.08 m  (Bottom/Top 직선 순수 길이)
@@ -403,15 +404,15 @@ def build_scene():
         stage=stage, planePath="/World/GroundPlane",
         axis="Z", size=30.0,
         position=Gf.Vec3f(0, 0, 0),
-        color=Gf.Vec3f(0.20, 0.20, 0.20),
+        color=Gf.Vec3f(0.02, 0.02, 0.02),   # 학습 데이터와 동일 — 거의 검정
     )
 
-    # ─── 2) 조명 ────────────────────────────────────────────────────────────
+    # ─── 2) 조명 — 학습 데이터 생성 설정과 동일하게 맞춤 ───────────────────
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-    dome.CreateIntensityAttr(600.0)
+    dome.CreateIntensityAttr(120.0)   # 학습 데이터: 50~200 범위 (기본 120)
 
     rect = UsdLux.RectLight.Define(stage, "/World/RectLight")
-    rect.CreateIntensityAttr(28000.0)
+    rect.CreateIntensityAttr(3000.0)  # 학습 데이터: 1000~5000 범위 (기본 3000)
     rect.CreateWidthAttr(8.0)    # 6 m 폭 커버
     rect.CreateHeightAttr(14.0)  # 12 m 길이 커버
     UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 8))
@@ -573,7 +574,8 @@ def build_scene():
 
     # ─── 6) 슬라롬 장애물 큐브 (Top 직선) ───────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Obstacles")
-    OBH = 0.30
+    OBH = 0.09   # 0.12→0.09
+    OBS = 0.05   # 0.07→0.05
     # ── Top 직선 장애물: x 간격 1.0 m, 지그재그 3개
     for pname, ox, oy in [
         ("Obs0", -1.00, TY + LANE * 0.60),   # 외측(북)
@@ -581,7 +583,7 @@ def build_scene():
         ("Obs2", +1.00, TY + LANE * 0.60),   # 외측(북)
     ]:
         _box(stage, f"/World/Obstacles/{pname}",
-             ox, oy, OBH / 2, 0.15, 0.15, OBH,
+             ox, oy, OBH / 2, OBS, OBS, OBH,
              "obs_cube", WHITE, phys=True)
 
     # ── Left 직선 장애물: ObsL0 제거 (lane 밖), ObsL1·ObsL2만 유지
@@ -590,7 +592,7 @@ def build_scene():
         ("ObsL2", LX + LANE * 0.60, +3.0),   # 내측(동)
     ]:
         _box(stage, f"/World/Obstacles/{pname}",
-             ox, oy, OBH / 2, 0.15, 0.15, OBH,
+             ox, oy, OBH / 2, OBS, OBS, OBH,
              "obs_cube", WHITE, phys=True)
 
     # ─── 7) QIV 터널 — 제거됨
@@ -677,9 +679,8 @@ try:
         sim_context.step(render=True)
 
         if _ENABLE_CAM and _cam_bridge and _cam_tick % _cam_interval == 0:
-            # simulation_app.update(): Replicator render_product 를 현재 프레임으로 갱신.
-            # rep.orchestrator.step() 대신 사용 — 가볍고 시뮬 루프와 충돌 없음.
-            simulation_app.update()
+            # sim_context.step(render=True) 가 이미 렌더링을 완료했으므로
+            # simulation_app.update() 중복 호출 제거 — 렌더 2회 → 1회로 절감
             _publish_cam_frame(*_cam_bridge)
         _cam_tick += 1
 

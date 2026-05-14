@@ -36,6 +36,12 @@ echo "[INFO] ROS2 Jazzy 환경 로드 완료 (Python $(python3 --version 2>&1 | 
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-1}   # launch_sim.sh 와 동일한 도메인
 
+# ── cuDNN 9 경로 추가 (onnxruntime-gpu CUDA 추론용) ─────────────────────
+CUDNN_LIB="/home/linux/.cache/uv/archive-v0/fEFaH1GfkEYRhjpfqRDsF/nvidia/cudnn/lib"
+if [ -d "$CUDNN_LIB" ]; then
+    export LD_LIBRARY_PATH="$CUDNN_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 echo "[INFO] RMW          : rmw_fastrtps_cpp"
 echo "[INFO] ROS_DOMAIN_ID: $ROS_DOMAIN_ID  (Isaac Sim 과 일치 필수)"
 echo ""

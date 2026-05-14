@@ -24,6 +24,9 @@ import math
 import time
 import os
 import sys
+import threading
+import termios
+import tty
 from pathlib import Path
 
 import numpy as np
@@ -41,17 +44,21 @@ IMG_W, IMG_H = 640, 480
 YOLO_SZ      = 640
 
 # ─── 검출 파라미터 ─────────────────────────────────────────────────────────────
-CONF_THRESH = 0.30   # 신뢰도 임계값 (detect 모델은 seg 보다 신뢰도가 높아 조금 낮게)
+CONF_THRESH = 0.05   # INT8 양자화로 confidence 저하 → 임시 하향 (원래 0.12)
 NMS_IOU_THR = 0.45
 
 # ─── 차선 ROI ──────────────────────────────────────────────────────────────────
 LANE_ROI_TOP_RATIO = 0.55   # 상단 이 비율 위는 무시
 
 # ─── 제어 파라미터 ─────────────────────────────────────────────────────────────
-MAX_SPEED   = 0.12
-MIN_SPEED   = 0.04
-MAX_ANGULAR = 1.80
-KP_ANGULAR  = 2.20
+MAX_SPEED   = 0.16   # 0.14→0.16: 기본 직선 속도 상향
+MIN_SPEED   = 0.07   # 0.04→0.07: 커브 시 최소 속도 상향
+MAX_ANGULAR = 10.0   # 8.00→10.0: 커브 최대 회전속도 상향
+KP_ANGULAR  = 9.00   # 7.00→9.00: 오프셋 대비 조향 게인 상향
+STEER_EXP   = 1.0    # 선형 응답
+
+# ─── 추적 손실 복구 (커브 구간 대응) ───────────────────────────────────────────
+LANE_RESUME_THRESH = 50   # 80→50: 재검출 수락 최대 픽셀 거리 (좁혀서 잘못된 검출 차단)
 
 # ─── LiDAR 장애물 파라미터 ─────────────────────────────────────────────────────
 OBS_WARN  = 0.70
@@ -70,11 +77,12 @@ class YoloDetector:
 
     def __init__(self, onnx_path: str):
         import onnxruntime as ort
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        providers = ["CPUExecutionProvider"]
         self.sess = ort.InferenceSession(onnx_path, providers=providers)
         inp = self.sess.get_inputs()[0]
         self.input_name = inp.name
         self.out_names  = [o.name for o in self.sess.get_outputs()]
+        self.last_infer_ms = 0.0
         print(f"[YOLO] 모델 로드: {onnx_path}")
         print(f"[YOLO] 입력: {inp.name} {inp.shape}")
         outs_info = [(o.name, o.shape) for o in self.sess.get_outputs()]
@@ -115,7 +123,9 @@ class YoloDetector:
             좌표는 원본 이미지(BGR) 픽셀 단위
         """
         inp  = self._preprocess(bgr)
+        _t0  = time.perf_counter()
         outs = self.sess.run(self.out_names, {self.input_name: inp})
+        self.last_infer_ms = (time.perf_counter() - _t0) * 1000.0
 
         # output0: (1, 5, 8400)  [cx cy w h conf]
         pred = outs[0][0]   # (5, 8400)
@@ -151,7 +161,14 @@ class YoloDetector:
                 "h":    float(raw_h[i]  * sy),
                 "conf": float(scores[i]),
             })
-        return results
+
+        # 존 기반 중복 제거: 좌(x < w/2) / 우(x >= w/2) 구역별 conf 최고 박스 1개만 유지
+        zone_best: dict[int, dict] = {}
+        for box in results:
+            zone = 0 if box["cx"] < w_orig / 2 else 1
+            if zone not in zone_best or box["conf"] > zone_best[zone]["conf"]:
+                zone_best[zone] = box
+        return list(zone_best.values())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -212,14 +229,14 @@ def fallback_lane_offset(bgr: np.ndarray) -> tuple[float | None, dict]:
     roi_y  = int(IMG_H * LANE_ROI_TOP_RATIO)
     roi    = gray[roi_y:]
 
-    WHITE_THRESH = 200
+    WHITE_THRESH = 180   # 200→180: 조명 변화에 더 강하게
     mask   = roi > WHITE_THRESH
     left   = mask.copy(); left[:,  IMG_W // 2:] = False
     right  = mask.copy(); right[:, :IMG_W // 2] = False
 
     def _col_center(m):
         _, xs = np.where(m)
-        return float(xs.mean()) if xs.size > 30 else None
+        return float(xs.mean()) if xs.size > 20 else None
 
     lx = _col_center(left)
     rx = _col_center(right)
@@ -228,7 +245,9 @@ def fallback_lane_offset(bgr: np.ndarray) -> tuple[float | None, dict]:
     if lx is not None:
         boxes.append({"cx": lx})
     if rx is not None:
-        boxes.append({"cx": rx + IMG_W // 2})
+        # rx 는 np.where(right) 의 결과 → 이미 절대 x 좌표 (320~639)
+        # 기존 코드의 "+ IMG_W // 2" 는 이중 오프셋 버그였음
+        boxes.append({"cx": rx})
 
     return compute_lane_offset(boxes, IMG_W)
 
@@ -307,11 +326,60 @@ class LaneDetectNode(Node):
         self._avoid_dir_lock = None
         self._start_time     = time.time()
 
-        self.get_logger().info("LaneDetectNode 시작 — /camera/image_raw 대기 중")
+        self._last_offset  = 0.0   # 마지막 유효 오프셋
+        self._last_lx      = None  # 마지막 유효 좌측 차선 x (픽셀)
+        self._last_rx      = None  # 마지막 유효 우측 차선 x (픽셀)
+        self._lost_frames  = 0     # 차선 미검출 연속 프레임 수
+
+        # FPS 측정
+        self._frame_count  = 0
+        self._fps_t0       = time.perf_counter()
+        self._fps          = 0.0
+
+        # 's'키를 누를 때까지 주행 억제
+        self._active = False
+        threading.Thread(target=self._wait_start_key, daemon=True).start()
+
+        self.get_logger().info("LaneDetectNode 준비 완료 — 's' 키를 눌러 주행 시작")
+
+    def _wait_start_key(self):
+        """키 입력 루프: 's' 시작/재시작, 'q' 제어 정지, ESC/Ctrl+C 종료."""
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            print("\n[KEY] 's' = 시작  |  'q' = 제어 정지  |  ESC/Ctrl+C = 종료", flush=True)
+            while True:
+                ch = sys.stdin.read(1)
+                if ch in ('s', 'S'):
+                    self._active = True
+                    print("\n[KEY] 주행 시작!", flush=True)
+                elif ch in ('q', 'Q'):
+                    self._active = False
+                    print("\n[KEY] 제어 정지. 's'를 눌러 재시작.", flush=True)
+                elif ch in ('\x03', '\x1b'):   # Ctrl+C / ESC
+                    self._active = False
+                    print("\n[KEY] 종료", flush=True)
+                    break
+        except Exception:
+            self._active = True   # 터미널 없는 환경에서는 바로 활성화
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            except Exception:
+                pass
 
     def _find_onnx(self) -> str | None:
         runs_dir = ROOT / "models" / "runs"
-        # lane_det* 우선, 없으면 lane_seg* 에서도 탐색
+        # INT8 모델 우선, 없으면 FP32 best.onnx 선택
+        # [테스트] INT8 비활성화 — FP32로 bbox 검출 확인
+        # int8_candidates = sorted(
+        #     list(runs_dir.glob("lane_det*/weights/best_int8.onnx")) +
+        #     list(runs_dir.glob("lane_seg*/weights/best_int8.onnx")),
+        #     key=lambda p: p.stat().st_mtime,
+        # )
+        # if int8_candidates:
+        #     return str(int8_candidates[-1])
         candidates = sorted(
             list(runs_dir.glob("lane_det*/weights/best.onnx")) +
             list(runs_dir.glob("lane_seg*/weights/best.onnx")),
@@ -331,13 +399,67 @@ class LaneDetectNode(Node):
             self.get_logger().error(f"이미지 변환 오류: {e}")
             return
 
+        # FPS 측정 (100프레임마다 출력)
+        self._frame_count += 1
+        if self._frame_count % 100 == 0:
+            elapsed = time.perf_counter() - self._fps_t0
+            self._fps = 100.0 / elapsed if elapsed > 0 else 0.0
+            self._fps_t0 = time.perf_counter()
+            infer_ms = self.detector.last_infer_ms if self.detector else 0.0
+            self.get_logger().info(
+                f"[PERF] 처리속도: {self._fps:.1f} FPS | "
+                f"ONNX 추론: {infer_ms:.1f} ms ({1000/infer_ms:.0f} FPS 등가)"
+                if infer_ms > 0 else
+                f"[PERF] 처리속도: {self._fps:.1f} FPS"
+            )
+
         # ── 1) 차선 bbox 검출 ──────────────────────────────────────────────────
         if self.detector is not None:
             boxes = self.detector.infer(bgr)
             offset, info = compute_lane_offset(boxes, IMG_W)
+            # YOLO 미검출 시 흰색 픽셀 기반 폴백
+            if offset is None:
+                offset, info = fallback_lane_offset(bgr)
         else:
             boxes = []
             offset, info = fallback_lane_offset(bgr)
+
+        # ── 1b) 추적 손실 복구 ────────────────────────────────────────────────
+        def _lane_close(last_x, new_x):
+            """둘 다 알 때만 거리 검사, 한쪽이라도 None이면 허용."""
+            if last_x is None or new_x is None:
+                return True
+            return abs(new_x - last_x) <= LANE_RESUME_THRESH
+
+        if offset is None:
+            self._lost_frames += 1
+            offset     = self._last_offset
+            label_hint = f"HOLD({self._lost_frames})"
+        else:
+            new_lx = info.get("left_cx")
+            new_rx = info.get("right_cx")
+            have_ref = (self._last_lx is not None or self._last_rx is not None)
+
+            if self._lost_frames > 0 and have_ref:
+                # 차선 재검출: 위치가 마지막 위치에서 너무 멀면 엉뚱한 검출 → 무시
+                if _lane_close(self._last_lx, new_lx) and _lane_close(self._last_rx, new_rx):
+                    self._last_lx     = new_lx if new_lx is not None else self._last_lx
+                    self._last_rx     = new_rx if new_rx is not None else self._last_rx
+                    self._last_offset = offset
+                    self._lost_frames = 0
+                    label_hint = "LANE"
+                else:
+                    # 위치 불일치 → HOLD 계속
+                    self._lost_frames += 1
+                    offset     = self._last_offset
+                    label_hint = f"HOLD({self._lost_frames})"
+            else:
+                # 정상 추적 중 — 무조건 수락
+                self._last_lx     = new_lx if new_lx is not None else self._last_lx
+                self._last_rx     = new_rx if new_rx is not None else self._last_rx
+                self._last_offset = offset
+                self._lost_frames = 0
+                label_hint = "LANE"
 
         # ── 2) LiDAR 장애물 판단 ──────────────────────────────────────────────
         obs_state, avoid_dir = 'clear', None
@@ -353,6 +475,12 @@ class LaneDetectNode(Node):
             return
 
         # ── 3) 차선 중심 오프셋 → 조향 ──────────────────────────────────────
+        # 비선형 조향: sign(offset) * |offset|^STEER_EXP * KP — 작은 오프셋은 부드럽게,
+        # 큰 오프셋(차선 이탈 위험)은 가파르게 반응
+        def _steer(off: float) -> float:
+            nonlinear = math.copysign(abs(off) ** STEER_EXP, off)
+            return float(-np.clip(KP_ANGULAR * nonlinear, -MAX_ANGULAR, MAX_ANGULAR))
+
         if obs_state == 'avoid':
             if self._avoid_dir_lock is None:
                 self._avoid_dir_lock = avoid_dir
@@ -361,14 +489,24 @@ class LaneDetectNode(Node):
             label = "AVOID"
         elif obs_state == 'warn':
             self._avoid_dir_lock = None
-            ang   = float(-np.clip(KP_ANGULAR * (offset or 0.0), -MAX_ANGULAR, MAX_ANGULAR))
+            ang   = _steer(offset)
             speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * 0.5
             label = "WARN"
         else:
             self._avoid_dir_lock = None
-            ang   = float(-np.clip(KP_ANGULAR * (offset or 0.0), -MAX_ANGULAR, MAX_ANGULAR))
-            speed = MAX_SPEED if offset is not None else MIN_SPEED
-            label = "LANE" if offset is not None else "NO_LANE"
+            ang   = _steer(offset)
+            # 오프셋이 클수록 속도 감소: 커브에서 충분히 회전할 시간 확보
+            turn_factor = max(0.0, 1.0 - abs(offset))
+            speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * turn_factor
+            if self._lost_frames > 0:
+                speed = MIN_SPEED
+            label = label_hint
+
+        # 's' 키 입력 전: 정지 유지, 검출 결과는 디버그 이미지로 계속 표시
+        if not self._active:
+            self._publish_cmd(0.0, 0.0)
+            self._publish_debug(bgr, boxes, info, offset or 0.0, f"STANDBY|{label}")
+            return
 
         self._publish_cmd(speed, ang)
         self._publish_debug(bgr, boxes, info, offset or 0.0, label)
@@ -381,8 +519,6 @@ class LaneDetectNode(Node):
 
     def _publish_debug(self, bgr: np.ndarray, boxes: list[dict],
                        info: dict, offset: float, label: str):
-        if self.dbg_pub.get_subscription_count() == 0:
-            return
 
         import cv2
         vis = bgr.copy()

@@ -42,7 +42,7 @@ for _ in range(20):
 # ─── 상수 ─────────────────────────────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
-LANE_SEP = 0.60        # 두 흰선 중심 간 거리 (차선 폭, m)
+LANE_SEP = 0.40        # 두 흰선 중심 간 거리 (차선 폭, m) — 0.60→0.40 (카메라 가장자리 쏠림 개선)
 HALF_SEP = LANE_SEP / 2  # = 0.30 m (중심선 → 각 흰선 오프셋)
 LW       = 0.02        # 차선 마킹 폭 (m)
 MH       = 0.001       # 차선 마킹 두께 (z scale, m)
@@ -51,13 +51,13 @@ MZ       = 0.005       # 차선 마킹 중심 z 위치 (m)
 # 장애물 위치 상수 ── 실험 중 좌표 변경 시 여기만 수정 ──────────────────────
 # 큐브: (이름, cx, cy, sx, sy, sz)
 OBS_CUBES = [
-    ("Obs1A", -0.6,  -3.6 + 0.18, 0.20, 0.20, 0.30),   # Bottom 직선 좌측 차선
-    ("Obs1B", +0.6,  -3.6 - 0.18, 0.20, 0.20, 0.30),   # Bottom 직선 우측 차선
+    ("Obs1A", -0.6,  -3.6 + 0.18, 0.12, 0.12, 0.18),   # Bottom 직선 좌측 차선
+    ("Obs1B", +0.6,  -3.6 - 0.18, 0.12, 0.12, 0.18),   # Bottom 직선 우측 차선
 ]
 # 콘 실린더: (이름, cx, cy, radius, height)
 OBS_CONES = [
-    ("Obs2A", +0.5,  +3.6, 0.08, 0.30),   # Top 직선 우측 콘
-    ("Obs2B", -0.5,  +3.6, 0.08, 0.30),   # Top 직선 좌측 콘
+    ("Obs2A", +0.5,  +3.6, 0.05, 0.18),   # Top 직선 우측 콘
+    ("Obs2B", -0.5,  +3.6, 0.05, 0.18),   # Top 직선 좌측 콘
 ]
 
 
@@ -444,15 +444,15 @@ def build_scene():
         stage=stage, planePath="/World/GroundPlane",
         axis="Z", size=30.0,
         position=Gf.Vec3f(0, 0, 0),
-        color=Gf.Vec3f(0.15, 0.15, 0.15),
+        color=Gf.Vec3f(0.02, 0.02, 0.02),   # 학습 데이터와 동일 — 거의 검정
     )
 
-    # ─── 2) 조명 (기존 v4 그대로) ───────────────────────────────────────────
+    # ─── 2) 조명 — 학습 데이터 생성 시 설정과 동일하게 맞춤 ─────────────────
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-    dome.CreateIntensityAttr(600.0)
+    dome.CreateIntensityAttr(120.0)   # 학습 데이터: 50~200 범위 (기본 120)
 
     rect = UsdLux.RectLight.Define(stage, "/World/RectLight")
-    rect.CreateIntensityAttr(28000.0)
+    rect.CreateIntensityAttr(3000.0)  # 학습 데이터: 1000~5000 범위 (기본 3000)
     rect.CreateWidthAttr(10.0)
     rect.CreateHeightAttr(10.0)
     UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 7))
