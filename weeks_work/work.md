@@ -1,7 +1,7 @@
 # gyusama-project 진행 정리 
 
 
-## W5 — Isaac Sim 가상 카메라 연동
+## Isaac Sim 가상 카메라 연동
 
 ### 목적
 Isaac Sim에서 TurtleBot3가 주행할 때 카메라 이미지를 ROS2 토픽(`/camera/image_raw`)으로 발행해야 합성 데이터 생성과 실시간 추론 파이프라인을 연결할 수 있다.
@@ -68,7 +68,7 @@ cam_path = _ROBOT_PATH + "/base_footprint/imx219_camera"
 
 ---
 
-## W6 — 합성 데이터 생성 · YOLOv8 학습 · 추론 파이프라인 완성
+## 합성 데이터 생성 · YOLOv8 학습 · 추론 파이프라인 완성
 
 ### 목적
 Isaac Sim 합성 이미지로 차선 검출 모델을 학습하고, 실시간으로 `/cmd_vel`을 발행하는 end-to-end 파이프라인을 완성한다.
@@ -192,7 +192,7 @@ self.sess = ort.InferenceSession(onnx_path, providers=providers)
 
 ---
 
-## W7 — RPi5 엣지 배포 및 INT8 양자화
+## RPi5 엣지 배포 및 INT8 양자화
 
 ### 목적
 실제 로봇(RPi5, CUDA 없음)에서 ONNX 모델이 실시간(≥10Hz) 처리가 가능한지 검증하고, 미달 시 INT8 양자화로 속도를 확보한다.
