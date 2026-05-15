@@ -44,7 +44,7 @@ IMG_W, IMG_H = 640, 480
 YOLO_SZ      = 640
 
 # ─── 검출 파라미터 ─────────────────────────────────────────────────────────────
-CONF_THRESH = 0.05   # INT8 양자화로 confidence 저하 → 임시 하향 (원래 0.12)
+CONF_THRESH = 0.12   # 가장자리 차선은 신뢰도가 낮게 나옴 → 낮게 설정
 NMS_IOU_THR = 0.45
 
 # ─── 차선 ROI ──────────────────────────────────────────────────────────────────
@@ -336,11 +336,14 @@ class LaneDetectNode(Node):
         self._fps_t0       = time.perf_counter()
         self._fps          = 0.0
 
-        # 's'키를 누를 때까지 주행 억제
-        self._active = False
+        # AUTOSTART=1 환경변수가 있으면 's' 없이 바로 활성화 (Docker 배포용)
+        self._active = os.environ.get('AUTOSTART', '').strip() in ('1', 'true', 'yes')
         threading.Thread(target=self._wait_start_key, daemon=True).start()
 
-        self.get_logger().info("LaneDetectNode 준비 완료 — 's' 키를 눌러 주행 시작")
+        if self._active:
+            self.get_logger().info("LaneDetectNode 준비 완료 — AUTOSTART 모드: 자동 주행")
+        else:
+            self.get_logger().info("LaneDetectNode 준비 완료 — 's' 키를 눌러 주행 시작")
 
     def _wait_start_key(self):
         """키 입력 루프: 's' 시작/재시작, 'q' 제어 정지, ESC/Ctrl+C 종료."""
@@ -371,15 +374,7 @@ class LaneDetectNode(Node):
 
     def _find_onnx(self) -> str | None:
         runs_dir = ROOT / "models" / "runs"
-        # INT8 모델 우선, 없으면 FP32 best.onnx 선택
-        # [테스트] INT8 비활성화 — FP32로 bbox 검출 확인
-        # int8_candidates = sorted(
-        #     list(runs_dir.glob("lane_det*/weights/best_int8.onnx")) +
-        #     list(runs_dir.glob("lane_seg*/weights/best_int8.onnx")),
-        #     key=lambda p: p.stat().st_mtime,
-        # )
-        # if int8_candidates:
-        #     return str(int8_candidates[-1])
+        # FP32 best.onnx 우선 (INT8 QDQ 양자화 신뢰도 붕괴 문제로 미사용)
         candidates = sorted(
             list(runs_dir.glob("lane_det*/weights/best.onnx")) +
             list(runs_dir.glob("lane_seg*/weights/best.onnx")),
@@ -394,7 +389,13 @@ class LaneDetectNode(Node):
 
     def _cb_image(self, msg: RosImage):
         try:
-            bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            import cv2
+            if msg.encoding in ('bgra8', 'rgba8', 'xrgb8888'):
+                raw = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+                code = cv2.COLOR_RGBA2BGR if msg.encoding == 'rgba8' else cv2.COLOR_BGRA2BGR
+                bgr = cv2.cvtColor(raw, code)
+            else:
+                bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as e:
             self.get_logger().error(f"이미지 변환 오류: {e}")
             return

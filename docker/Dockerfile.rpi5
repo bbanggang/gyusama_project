@@ -9,17 +9,22 @@ FROM ros:jazzy-ros-base
 # 비대화형 설치 모드
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ── TurtleBot3 + 필수 패키지 설치 ────────────────────────────────────
+# ── TurtleBot3 + 카메라 + 추론 필수 패키지 설치 ──────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-turtlebot3-msgs \
     ros-jazzy-turtlebot3-bringup \
     ros-jazzy-dynamixel-sdk \
+    ros-jazzy-cv-bridge \
+    ros-jazzy-camera-ros \
     python3-argcomplete \
     python3-pip \
+    python3-opencv \
     && rm -rf /var/lib/apt/lists/*
 
-# ── ONNX Runtime (CPU, ARM64용) ───────────────────────────────────────
-RUN pip3 install --no-cache-dir --break-system-packages onnxruntime
+# ── ONNX Runtime + numpy 버전 고정 (cv_bridge NumPy 1.x 호환) ─────────
+RUN pip3 install --no-cache-dir --break-system-packages \
+    onnxruntime \
+    "numpy<2"
 
 # ── ROS2 환경 변수 ────────────────────────────────────────────────────
 ENV ROS_DOMAIN_ID=1
