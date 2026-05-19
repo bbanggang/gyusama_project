@@ -12,7 +12,7 @@ from ultralytics import YOLO
 DATA_YAML  = "data/synthetic/dataset.yaml"
 FP32_MODEL = "models/runs/lane_det-3/weights/best.pt"
 FP32_ONNX  = "models/runs/lane_det-3/weights/best.onnx"
-INT8_MODEL = "models/runs/lane_det-3/weights/best_int8.onnx"
+INT8_MODEL = "models/runs/lane_det-3/weights/best_dynamic_int8.onnx"
 
 CONF_THRESH = 0.12
 NMS_IOU_THR = 0.45

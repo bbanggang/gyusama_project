@@ -1,0 +1,56 @@
+services:
+
+  # ── AI 추론 노드 (lane_detect.py → /lane/cmd_vel) ────────────────────
+  # Isaac Sim이 /camera/image_raw 를 발행한다.
+  inference-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.pc
+    container_name: inference-node
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    volumes:
+      - ../:/ros2_ws
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+      - AUTOSTART=1                    # Sim 환경에서 's' 키 없이 자동 시작
+    command: python3 /ros2_ws/models/inference_node/lane_detect.py
+
+  # ── LiDAR 장애물 감지 노드 (/scan → /obstacle/state) ─────────────────
+  # Isaac Sim이 /scan 을 발행한다.
+  obstacle-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.pc
+    container_name: obstacle-node
+    network_mode: host
+    ipc: host
+    volumes:
+      - ../:/ros2_ws
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    command: python3 /ros2_ws/models/inference_node/obstacle_node.py
+
+  # ── Behavior Tree 관리 노드 → /cmd_vel ───────────────────────────────
+  # Isaac Sim이 /cmd_vel 을 구독한다.
+  behavior-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.pc
+    container_name: behavior-node
+    network_mode: host
+    ipc: host
+    volumes:
+      - ../:/ros2_ws
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+      - CMD_VEL_STAMPED=0              # Isaac Sim: Twist 사용
+    command: python3 /ros2_ws/models/inference_node/behavior_manager.py

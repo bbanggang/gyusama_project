@@ -112,16 +112,109 @@ gyusama-project/
 
 ### 실행 순서
 
-```bash
-# 1) 호스트에서 카메라 노드 실행
-FASTDDS_BUILTIN_TRANSPORTS=UDPv4 ROS_DOMAIN_ID=1 \
-  ros2 run camera_ros camera_node --ros-args -p width:=640 -p height:=480
+각 노드는 별도 터미널에서 실행한다. **순서 중요: control-node → inference-node → camera**
 
-# 2) Docker 컨테이너 실행
-cd ~/gyusama-project/docker
-docker compose up inference-node   # 추론 노드
-docker compose up control-node     # 모터 제어 노드 (Dynamixel 연결 후)
+**터미널 1 — control-node (모터 제어)**
+```bash
+cd ~/gyusama-project
+docker compose -f docker/docker-compose.yml up control-node
 ```
+
+**터미널 2 — inference-node (YOLO 추론 + /cmd_vel 발행)**
+```bash
+cd ~/gyusama-project
+docker compose -f docker/docker-compose.yml up inference-node
+```
+
+**터미널 3 — 카메라 노드 (호스트 직접 실행)**
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=1
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+ros2 run camera_ros camera_node --ros-args -p width:=640 -p height:=480
+```
+
+### 종료 방법
+
+```bash
+# Docker 컨테이너 전체 종료
+cd ~/gyusama-project
+docker compose -f docker/docker-compose.yml down
+
+# 카메라 노드 종료 (Ctrl+C 안 될 경우)
+kill $(pgrep -f camera_node)
+```
+
+### PC에서 /lane/debug_image 원격 확인
+
+RPi5와 PC가 같은 LAN에 있을 때 FastDDS 유니캐스트 피어 설정으로 토픽을 수신할 수 있다.
+도메인 1의 discovery 포트(7650, 7660~7664)를 명시해야 모든 DDS 참여자가 발견된다.
+
+**1단계 — PC에서 FastDDS 피어 설정 파일 생성 (최초 1회)**
+
+터미널에서 직접 입력하면 들여쓰기로 인해 XML이 깨질 수 있으므로, 아래 명령을 그대로 복사해서 실행한다:
+
+```bash
+cat > /tmp/fastdds_peer.xml << 'XMLEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <participant profile_name="default_participant" is_default_profile="true">
+    <rtps>
+      <builtin>
+        <initialPeersList>
+          <locator>
+            <udpv4>
+              <address>192.168.0.155</address>
+              <port>7650</port>
+            </udpv4>
+          </locator>
+          <locator>
+            <udpv4>
+              <address>192.168.0.155</address>
+              <port>7660</port>
+            </udpv4>
+          </locator>
+          <locator>
+            <udpv4>
+              <address>192.168.0.155</address>
+              <port>7662</port>
+            </udpv4>
+          </locator>
+          <locator>
+            <udpv4>
+              <address>192.168.0.155</address>
+              <port>7664</port>
+            </udpv4>
+          </locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>
+XMLEOF
+```
+
+**2단계 — 환경변수 설정 및 데몬 재시작 (RPi5 노드가 모두 뜬 후 실행)**
+
+```bash
+export FASTRTPS_DEFAULT_PROFILES_FILE=/tmp/fastdds_peer.xml
+export ROS_DOMAIN_ID=1
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+ros2 daemon stop && ros2 daemon start
+ros2 topic list   # /lane/debug_image, /camera/image_raw 등 확인
+```
+
+**3단계 — 이미지 시각화**
+
+```bash
+ros2 run rqt_image_view rqt_image_view
+# 상단 드롭다운에서 /lane/debug_image 선택
+```
+
+> **주의**: RPi5 방화벽(ufw)이 활성화된 경우 UDP 포트를 허용해야 한다.
+> ```bash
+> sudo ufw allow 7400:7700/udp
+> ```
 
 ---
 
@@ -300,37 +393,171 @@ KeyError: 'LDS_MODEL'
 
 ## 4. 최종 구성 요약
 
-### 호스트 실행 (매 부팅 후)
+### 하드웨어 연결 확인 (부팅 전)
+
+- OpenCR ↔ Dynamixel Motor 1 (ID=1): TTL 3핀 케이블 직결
+- OpenCR ↔ Dynamixel Motor 2 (ID=2): TTL 3핀 케이블 직결
+- OpenCR USB → RPi5 USB-A (`/dev/ttyACM0`)
+- IMX219 CSI 케이블 → RPi5 CAM0
+- 11.1V LiPo 배터리 → OpenCR (전압 10.8V 이상 확인 후 연결)
+
+### 노드 실행 (매 부팅 후)
 
 ```bash
+# 터미널 1
+cd ~/gyusama-project
+docker compose -f docker/docker-compose.yml up control-node
+
+# 터미널 2
+cd ~/gyusama-project
+docker compose -f docker/docker-compose.yml up inference-node
+
+# 터미널 3
 source /opt/ros/jazzy/setup.bash
-
-# 카메라 노드 (포그라운드 또는 백그라운드)
-FASTDDS_BUILTIN_TRANSPORTS=UDPv4 ROS_DOMAIN_ID=1 \
-  ros2 run camera_ros camera_node --ros-args -p width:=640 -p height:=480 &
-```
-
-### Docker 컨테이너 실행
-
-```bash
-cd ~/gyusama-project/docker
-docker compose up inference-node &   # 추론 + /cmd_vel 발행
-docker compose up control-node       # 모터 제어 (Dynamixel 연결 필요)
+export ROS_DOMAIN_ID=1
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+ros2 run camera_ros camera_node --ros-args -p width:=640 -p height:=480
 ```
 
 ### 동작 확인
 
 ```bash
-ros2 topic hz /camera/image_raw   # 30 FPS 확인
-ros2 topic echo /cmd_vel          # 제어 명령 확인
-ros2 topic hz /lane/debug_image   # 디버그 이미지 확인
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=1
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+
+ros2 topic hz /camera/image_raw      # 프레임 수신 확인 (30 FPS)
+ros2 topic echo /cmd_vel --once      # 제어 명령 확인 (TwistStamped)
+ros2 topic echo /battery_state --once  # 배터리 전압 확인
 ```
+
+### 전체 종료
+
+```bash
+cd ~/gyusama-project
+docker compose -f docker/docker-compose.yml down
+kill $(pgrep -f camera_node)
+```
+
+---
+
+### 문제 7: /cmd_vel 타입 불일치 (Twist → TwistStamped)
+
+**증상**
+모터가 전혀 반응하지 않음. `ros2 topic info /cmd_vel` 확인 시 타입 불일치.
+
+**원인**
+ROS2 Jazzy의 `turtlebot3_node` 2.3.6은 `/cmd_vel`을 `geometry_msgs/msg/TwistStamped`로 구독한다.
+`lane_detect.py`는 `geometry_msgs/msg/Twist`로 발행하고 있었다.
+
+**해결**
+`lane_detect.py`의 publisher 및 발행 코드를 TwistStamped로 수정:
+```python
+from geometry_msgs.msg import TwistStamped
+self.cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
+
+def _publish_cmd(self, linear: float, angular: float):
+    msg = TwistStamped()
+    msg.header.stamp   = self.get_clock().now().to_msg()
+    msg.twist.linear.x = float(linear)
+    msg.twist.angular.z = float(angular)
+    self.cmd_pub.publish(msg)
+```
+
+---
+
+### 문제 8: OpenCR 펌웨어 버전 (ROS1 → ROS2)
+
+**증상**
+```
+[turtlebot3_ros] Failed connection with Devices
+```
+
+**원인**
+OpenCR에 ROS1용 펌웨어가 올라가 있었다.
+
+**해결**
+RPi5에서 ROS2 burger 펌웨어 플래시:
+```bash
+# RPi5 (aarch64)에서 32비트 ARM 바이너리 실행을 위한 compat lib 설치
+sudo dpkg --add-architecture armhf
+sudo apt update
+sudo apt install -y libc6:armhf libstdc++6:armhf
+
+export OPENCR_PORT=/dev/ttyACM0
+export OPENCR_MODEL=burger
+rm -rf /tmp/opencr_update
+mkdir /tmp/opencr_update && cd /tmp/opencr_update
+wget https://github.com/ROBOTIS-GIT/OpenCR-Binaries/raw/master/turtlebot3/ROS2/latest/burger.opencr
+./update.sh $OPENCR_PORT $OPENCR_MODEL.opencr
+```
+플래시 완료 후 OpenCR LED 패턴으로 확인. 펌웨어: `V230127R1`
+
+---
+
+### 문제 9: Dynamixel TTL 케이블 오연결
+
+**증상**
+control-node 정상 기동 후에도 모터 미반응.
+`ros2 topic echo /sensor_state` 출력 없음 (노드 크래시).
+```
+*** stack smashing detected ***
+```
+
+**원인**
+TTL 3핀 케이블이 OpenCR MCU 포트에 잘못 꽂혀 있었다.
+`turtlebot3_node`가 모터 상태를 읽지 못하면 버퍼 오버플로 크래시 발생.
+
+**해결**
+각 Dynamixel 모터에 OpenCR TTL 3핀 케이블을 **각각 직결**:
+- Motor 1 (ID=1) → OpenCR TTL 포트
+- Motor 2 (ID=2) → OpenCR TTL 포트
+
+연결 후 control-node 재기동 시 `Add Motors` → `Run!` 정상 출력 확인.
+
+---
+
+### 문제 10: control-node FastDDS 환경변수 누락
+
+**증상**
+inference-node의 `/cmd_vel`이 control-node에 전달되지 않음.
+
+**원인**
+`docker-compose.yml`의 control-node에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`가 없었다.
+
+**해결**
+`docker-compose.yml` control-node 환경변수에 추가:
+```yaml
+environment:
+  - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+```
+
+---
+
+### Dynamixel 모터 스캔 (ID / baudrate 확인)
+
+U2D2 어댑터를 PC에 연결하여 모터 설정 확인:
+```bash
+# RPi5 전원 ON, control-node는 OFF 상태에서 진행
+python3 scripts/scan_dxl_u2d2.py /dev/ttyUSB0
+
+# baudrate 1,000,000으로 변경이 필요한 경우
+python3 scripts/scan_dxl_u2d2.py /dev/ttyUSB0 --fix
+```
+
+이번 프로젝트 모터 확인 결과:
+| 모터 | ID | 모델 | baudrate |
+|------|-----|------|----------|
+| 왼쪽 바퀴 | 1 | XL430-W250 (1060) | 1,000,000 ✓ |
+| 오른쪽 바퀴 | 2 | XL430-W250 (1060) | 1,000,000 ✓ |
 
 ---
 
 ## 5. 잔여 과제
 
-- [ ] Dynamixel U2D2 연결 후 control-node 실제 구동 확인
+- [x] Dynamixel U2D2 연결 후 control-node 실제 구동 확인
+- [x] 전체 파이프라인 동작 확인 (카메라 → YOLO → /cmd_vel → 모터)
 - [ ] 실제 트랙 주행 테스트 및 파라미터 튜닝
 - [ ] 부팅 자동 실행 스크립트 작성 (systemd 또는 rc.local)
 - [ ] Sim-to-Real 갭 분석
+- [ ] PC 원격 모니터링 (/lane/debug_image 원격 시각화)

@@ -116,14 +116,14 @@ Isaac Sim(가상)과 실제 트랙 간의 차이를 확인한다.
 
 ## 3. 완료 기준 체크리스트
 
-- [ ] RPi5 배포 환경 구성 — venv + onnxruntime + lane_detect.py 실행 확인
-- [ ] INT8 모델 우선 선택 수정 — `_find_onnx()`에서 `best_int8.onnx` 우선 선택
-- [ ] RPi5에서 `lane_detect.py` 실행 — `[YOLO] 모델 로드: ...best_int8.onnx` 확인
-- [ ] `/cmd_vel` 토픽 발행 확인 — RPi5에서 정상 출력
-- [ ] 실물 트랙에서 차선 추종 테스트 — 직선 구간 정상 동작 확인
-- [ ] 커브 구간 차선 추종 확인
-- [ ] Sim-to-Real 갭 분석 — 인식률 및 조정 필요 파라미터 기록
-- [ ] (선택) 실물 이미지 파인튜닝 — 갭이 클 경우 수행
+- [x] RPi5 배포 환경 구성 — Docker 기반 inference-node / control-node 구성 완료
+- [-] INT8 모델 우선 선택 수정 — `_find_onnx()` 수정 완료, 단 INT8 실검출 실패(mAP50=0.000)로 FP32(`best.onnx`) 로 전환
+- [-] RPi5에서 `lane_detect.py` 실행 — 실행 확인, 단 `best_int8.onnx` 아닌 FP32 모델 로드 중
+- [x] `/cmd_vel` 토픽 발행 확인 — 모터 동작 확인
+- [-] 실물 트랙에서 차선 추종 테스트 — 파이프라인 동작 확인, FPS ~2로 실질적 차선 추종 어려움
+- [ ] 커브 구간 차선 추종 확인 — 실물 트랙 미테스트
+- [ ] Sim-to-Real 갭 분석 — 미수행
+- [ ] (선택) 실물 이미지 파인튜닝 — 미수행
 
 ---
 

@@ -1,8 +1,8 @@
 services:
 
-  # ── AI 추론 노드 (lane_detect.py + ONNX INT8) ────────────────────────
+  # ── AI 추론 노드 (lane_detect.py → /lane/cmd_vel) ────────────────────
   # camera-node는 호스트 libcamera RPi fork 버전과 컨테이너 버전 불일치로
-  # 호스트에서 직접 실행 (아래 README 참고)
+  # 호스트에서 직접 실행
   inference-node:
     build:
       context: .
@@ -16,10 +16,46 @@ services:
       - ../:/ros2_ws                 # 프로젝트 루트 → /ros2_ws (모델 경로 자동 탐색)
     environment:
       - ROS_DOMAIN_ID=1
-      - AUTOSTART=1
       - PYTHONUNBUFFERED=1
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+      - CAMERA_FLIP=1                  # IMX219 180° 회전 보정 (RPi5 PiSP 파이프라인)
+      - CMD_VEL_STAMPED=1              # turtlebot3_node Jazzy: TwistStamped 사용
     command: python3 /ros2_ws/models/inference_node/lane_detect.py
+    restart: unless-stopped
+
+  # ── LiDAR 장애물 감지 노드 (obstacle_node.py → /obstacle/state) ──────
+  obstacle-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.rpi5
+    container_name: obstacle-node
+    network_mode: host
+    ipc: host
+    volumes:
+      - ../:/ros2_ws
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    command: python3 /ros2_ws/models/inference_node/obstacle_node.py
+    restart: unless-stopped
+
+  # ── Behavior Tree 관리 노드 (behavior_manager.py → /cmd_vel) ─────────
+  behavior-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.rpi5
+    container_name: behavior-node
+    network_mode: host
+    ipc: host
+    volumes:
+      - ../:/ros2_ws
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+      - CMD_VEL_STAMPED=1              # turtlebot3_node Jazzy: TwistStamped 사용
+    command: python3 /ros2_ws/models/inference_node/behavior_manager.py
     restart: unless-stopped
 
   # ── 모터 제어 노드 (Dynamixel / TurtleBot3 bringup) ──────────────────
@@ -36,5 +72,6 @@ services:
       - ROS_DOMAIN_ID=1
       - TURTLEBOT3_MODEL=burger
       - LDS_MODEL=ld08               # LiDAR 모델 (ld08 / lds_01 / hls_lfcd_lds)
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
     command: ros2 launch turtlebot3_bringup robot.launch.py
     restart: unless-stopped

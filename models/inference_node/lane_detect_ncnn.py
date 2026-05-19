@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-lane_detect.py — YOLOv8-detect ONNX 추론 기반 차선 추종 노드
+lane_detect_ncnn.py — YOLOv8-detect ncnn 추론 기반 차선 추종 노드
 =============================================================
 /camera/image_raw 를 구독하여 YOLOv8-detect ONNX 모델로 좌/우 차선 마킹을 검출하고
 두 박스의 중심 x 좌표 중간값을 목표로 /lane/cmd_vel 을 발행한다.
@@ -65,30 +65,26 @@ LANE_TRACK_THRESH = 80     # 마지막 위치에서 이 픽셀 이내 검출만 
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ── YOLOv8-detect ONNX 추론 ───────────────────────────────────────────────────
+# ── YOLOv8-detect ncnn 추론 ───────────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class YoloDetector:
-    """YOLOv8-detect ONNX 모델 로드 및 추론."""
+    """YOLOv8-detect ncnn 모델 로드 및 추론."""
 
-    def __init__(self, onnx_path: str):
-        import onnxruntime as ort
-        providers = ["CPUExecutionProvider"]
-        self.sess = ort.InferenceSession(onnx_path, providers=providers)
-        inp = self.sess.get_inputs()[0]
-        self.input_name = inp.name
-        self.out_names  = [o.name for o in self.sess.get_outputs()]
+    def __init__(self, model_dir: str):
+        import ncnn
+        self.net = ncnn.Net()
+        self.net.opt.use_vulkan_compute  = False
+        self.net.opt.num_threads         = 4      # RPi5 4코어 활용
+        self.net.opt.use_fp16_packed     = True   # fp16 연산 활성화
+        self.net.opt.use_fp16_storage    = True
+        self.net.opt.use_fp16_arithmetic = True
+        self.net.load_param(f"{model_dir}/model.ncnn.param")
+        self.net.load_model(f"{model_dir}/model.ncnn.bin")
         self.last_infer_ms = 0.0
-        print(f"[YOLO] 모델 로드: {onnx_path}")
-        print(f"[YOLO] 입력: {inp.name} {inp.shape}")
-        outs_info = [(o.name, o.shape) for o in self.sess.get_outputs()]
-        print(f"[YOLO] 출력: {outs_info}")
-
-    def _preprocess(self, bgr: np.ndarray) -> np.ndarray:
-        import cv2
-        img = cv2.resize(bgr, (YOLO_SZ, YOLO_SZ))
-        img = img[:, :, ::-1].astype(np.float32) / 255.0
-        return np.ascontiguousarray(img.transpose(2, 0, 1)[None])
+        print(f"[YOLO] ncnn 모델 로드: {model_dir}")
+        print(f"[YOLO] 입력: in0 [1, 3, {YOLO_SZ}, {YOLO_SZ}]")
+        print(f"[YOLO] 출력: out0 [5, 8400]")
 
     @staticmethod
     def _nms(cx: np.ndarray, cy: np.ndarray, w: np.ndarray, h: np.ndarray,
@@ -118,35 +114,38 @@ class YoloDetector:
         boxes : list[dict]  각 원소: {'cx', 'cy', 'w', 'h', 'conf'}
             좌표는 원본 이미지(BGR) 픽셀 단위
         """
-        inp  = self._preprocess(bgr)
-        _t0  = time.perf_counter()
-        outs = self.sess.run(self.out_names, {self.input_name: inp})
+        import cv2, ncnn
+        img = cv2.resize(bgr, (YOLO_SZ, YOLO_SZ))
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mat_in = ncnn.Mat.from_pixels(img_rgb, 1, YOLO_SZ, YOLO_SZ)  # 1 = PIXEL_RGB
+        mat_in.substract_mean_normalize([], [1/255.0, 1/255.0, 1/255.0])
+
+        ex = self.net.create_extractor()
+        ex.input("in0", mat_in)
+        _t0 = time.perf_counter()
+        _, mat_out = ex.extract("out0")
         self.last_infer_ms = (time.perf_counter() - _t0) * 1000.0
 
-        # output0: (1, 5, 8400)  [cx cy w h conf]
-        pred = outs[0][0]   # (5, 8400)
+        pred = np.array(mat_out)          # (5, 8400) 또는 (5, 1, 8400)
+        if pred.ndim == 3:
+            pred = pred[:, 0, :]          # → (5, 8400)
 
-        raw_cx   = pred[0]   # (8400,) 0~640 범위 (YOLO 입력 좌표계)
-        raw_cy   = pred[1]
-        raw_w    = pred[2]
-        raw_h    = pred[3]
-        scores   = pred[4]   # nc=1 이므로 마지막 행이 클래스 0 신뢰도
+        raw_cx = pred[0];  raw_cy = pred[1]
+        raw_w  = pred[2];  raw_h  = pred[3]
+        scores = pred[4]
 
-        # ROI 필터: cy > YOLO_SZ * LANE_ROI_TOP_RATIO 인 박스만 유지
         roi_top_px = YOLO_SZ * LANE_ROI_TOP_RATIO
         pre_idx = np.where((scores > CONF_THRESH) & (raw_cy > roi_top_px))[0]
-
         if pre_idx.size == 0:
             return []
 
         keep = self._nms(raw_cx[pre_idx], raw_cy[pre_idx],
-                         raw_w[pre_idx], raw_h[pre_idx],
+                         raw_w[pre_idx],  raw_h[pre_idx],
                          scores[pre_idx])
         valid_idx = pre_idx[keep]
 
         h_orig, w_orig = bgr.shape[:2]
-        sx = w_orig / YOLO_SZ
-        sy = h_orig / YOLO_SZ
+        sx = w_orig / YOLO_SZ;  sy = h_orig / YOLO_SZ
 
         results = []
         for i in valid_idx:
@@ -158,7 +157,6 @@ class YoloDetector:
                 "conf": float(scores[i]),
             })
 
-        # 존 기반 중복 제거: 좌(x < w/2) / 우(x >= w/2) 구역별 conf 최고 박스 1개만 유지
         zone_best: dict[int, dict] = {}
         for box in results:
             zone = 0 if box["cx"] < w_orig / 2 else 1
@@ -258,14 +256,14 @@ class LaneDetectNode(Node):
     def __init__(self):
         super().__init__("lane_detect_node")
 
-        best_onnx = os.environ.get('ONNX_MODEL') or self._find_onnx()
-        if best_onnx:
-            self.get_logger().info(f"ONNX 모델 사용: {best_onnx}")
-            self.detector = YoloDetector(best_onnx)
+        model_path = os.environ.get('ONNX_MODEL') or self._find_ncnn()
+        if model_path:
+            self.get_logger().info(f"ncnn 모델 사용: {model_path}")
+            self.detector = YoloDetector(model_path)
         else:
             self.get_logger().warn(
-                "ONNX 모델 없음 — 흰색 픽셀 폴백 모드\n"
-                "  먼저: python3 models/train_yolo_lane.py"
+                "ncnn 모델 없음 — 흰색 픽셀 폴백 모드\n"
+                "  먼저: models/runs/lane_det*/weights/best_ncnn_model 디렉터리 확인"
             )
             self.detector = None
 
@@ -331,12 +329,11 @@ class LaneDetectNode(Node):
             except Exception:
                 pass
 
-    def _find_onnx(self) -> str | None:
+    def _find_ncnn(self) -> str | None:
         runs_dir = ROOT / "models" / "runs"
-        # FP32 best.onnx 우선 (INT8 QDQ 양자화 신뢰도 붕괴 문제로 미사용)
         candidates = sorted(
-            list(runs_dir.glob("lane_det*/weights/best.onnx")) +
-            list(runs_dir.glob("lane_seg*/weights/best.onnx")),
+            list(runs_dir.glob("lane_det*/weights/best_ncnn_model")) +
+            list(runs_dir.glob("lane_seg*/weights/best_ncnn_model")),
             key=lambda p: p.stat().st_mtime,
         )
         return str(candidates[-1]) if candidates else None

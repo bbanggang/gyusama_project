@@ -21,9 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-opencv \
     && rm -rf /var/lib/apt/lists/*
 
-# ── ONNX Runtime + numpy 버전 고정 (cv_bridge NumPy 1.x 호환) ─────────
+# ── ONNX Runtime + ncnn + numpy 버전 고정 (cv_bridge NumPy 1.x 호환) ──
 RUN pip3 install --no-cache-dir --break-system-packages \
     onnxruntime \
+    ncnn \
     "numpy<2"
 
 # ── ROS2 환경 변수 ────────────────────────────────────────────────────
