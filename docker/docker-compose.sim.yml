@@ -35,6 +35,7 @@ services:
       - ROS_DOMAIN_ID=1
       - PYTHONUNBUFFERED=1
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+      - LIDAR_OFFSET_DEG=180           # Isaac Sim: LiDAR 0°=후방 → 전방 오프셋
     command: python3 /ros2_ws/models/inference_node/obstacle_node.py
 
   # ── Behavior Tree 관리 노드 → /cmd_vel ───────────────────────────────

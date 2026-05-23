@@ -336,6 +336,7 @@ def build_scene():
     WHITE   = (1.00, 1.00, 1.00)
     ORANGE  = (1.00, 0.40, 0.00)
     GRAY    = (0.55, 0.55, 0.55)
+    RED     = (1.00, 0.00, 0.00)
 
     # ── 기본 치수
     # 1차선: TurtleBot3 Burger 폭(0.14 m) + 카메라 시야 확보 여유
@@ -574,8 +575,8 @@ def build_scene():
 
     # ─── 6) 슬라롬 장애물 큐브 (Top 직선) ───────────────────────────────────
     UsdGeom.Scope.Define(stage, "/World/Obstacles")
-    OBH = 0.09   # 0.12→0.09
-    OBS = 0.05   # 0.07→0.05
+    OBH = 0.25   # LiDAR 빔 높이(~0.172m) 이상으로 증가 → LiDAR 감지 가능
+    OBS = 0.05   # 0.08→0.05: 좁은 트랙에서 회피 여유 공간 확보
     # ── Top 직선 장애물: x 간격 1.0 m, 지그재그 3개
     for pname, ox, oy in [
         ("Obs0", -1.00, TY + LANE * 0.60),   # 외측(북)
@@ -584,7 +585,7 @@ def build_scene():
     ]:
         _box(stage, f"/World/Obstacles/{pname}",
              ox, oy, OBH / 2, OBS, OBS, OBH,
-             "obs_cube", WHITE, phys=True)
+             "obs_cube", RED, phys=True)
 
     # ── Left 직선 장애물: ObsL0 제거 (lane 밖), ObsL1·ObsL2만 유지
     for pname, ox, oy in [
@@ -593,7 +594,7 @@ def build_scene():
     ]:
         _box(stage, f"/World/Obstacles/{pname}",
              ox, oy, OBH / 2, OBS, OBS, OBH,
-             "obs_cube", WHITE, phys=True)
+             "obs_cube", RED, phys=True)
 
     # ─── 7) QIV 터널 — 제거됨
 

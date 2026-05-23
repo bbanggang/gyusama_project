@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-behavior_manager.py — Behavior Tree 기반 우선순위 제어 노드
+behavior_manager.py — APF(인공 포텐셜 필드) 기반 차선유지 + 장애물회피 노드
 
 토픽:
   구독: /lane/cmd_vel (Twist|TwistStamped), /obstacle/state (std_msgs/String)
   발행: /cmd_vel (Twist|TwistStamped)
 
-우선순위 (높음 → 낮음):
-  stop  → 회전 정지 (선속도 0, 최대 각속도로 회피 방향 전환)
-  avoid → 빠른 탈출 (MIN_SPEED*1.5, 최대 각속도)
-  warn  → 차선 + 회피 50:50 블렌드 (감속)
-  clear → /lane/cmd_vel 그대로 전달
+제어 법칙 (연속 합성):
+  angular = clip(lane_angular + K_REP * fy,  ±MAX_ANGULAR)
+  linear  = lane_linear * speed_factor(min_front)
+
+  - lane_angular: 차선 중심으로 끄는 인력 (항상 살아있어 회피 후 자동 복귀)
+  - K_REP * fy : 장애물이 미는 척력 (가까울수록 강함, 차선 폭 내로 제한)
+  - speed_factor: 장애물 근접 시 감속, STOP_DIST 이하면 정지
 """
 
-import math
 import os
 import time
 
@@ -26,12 +27,17 @@ from std_msgs.msg import String
 _USE_STAMPED = os.environ.get('CMD_VEL_STAMPED', '0') == '1'
 
 # ─── 제어 파라미터 ─────────────────────────────────────────────────────────────
-MAX_SPEED   = 0.14
-MIN_SPEED   = 0.08
-MAX_ANGULAR = 12.0
+MAX_ANGULAR = 0.5     # 1.1→0.8: 회피 회전량 추가 축소
+K_REP       = 0.8     # 척력(fy) → 각속도 변환 게인 (★주 튜닝 노브: 약하면↑, 차선이탈하면↓)
+LANE_MIN    = 0.35    # 0.2→0.35: 회피 중에도 차선 인력 유지 → 과도 이탈 억제
+SLOW_DIST   = 0.60    # 이 거리부터 감속 시작
+STOP_DIST   = 0.22    # 이 거리 이하면 정지
 
-# /obstacle/state 토픽이 이 시간(초) 이상 오지 않으면 clear로 간주
-OBS_TIMEOUT = 0.5
+OBS_TIMEOUT = 0.5     # /obstacle/state 가 이 시간(초) 이상 없으면 clear
+
+
+def _clip(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
 
 
 class BehaviorManager(Node):
@@ -46,18 +52,19 @@ class BehaviorManager(Node):
         )
 
         msg_type = TwistStamped if _USE_STAMPED else Twist
-        self.create_subscription(msg_type, '/lane/cmd_vel',   self._cb_lane,    best_effort_qos)
-        self.create_subscription(String,   '/obstacle/state', self._cb_obs,     10)
+        self.create_subscription(msg_type, '/lane/cmd_vel',   self._cb_lane, best_effort_qos)
+        self.create_subscription(String,   '/obstacle/state', self._cb_obs,  10)
         self.cmd_pub = self.create_publisher(msg_type, '/cmd_vel', 10)
 
         self._lane_linear  = 0.0
         self._lane_angular = 0.0
-        self._obs_state    = 'clear'
-        self._avoid_dir    = 1        # 1=오른쪽, -1=왼쪽
-        self._avoid_locked = None     # 회피 중 방향 고정
-        self._obs_stamp    = 0.0      # 마지막 obstacle 메시지 수신 시각
+        self._rep_fx       = 0.0      # 장애물 전방 척력
+        self._rep_fy       = 0.0      # 장애물 횡방향 척력 (+좌)
+        self._min_front    = 99.0     # 전방 최소거리
+        self._has_obs      = False    # 영향권 내 장애물 존재 여부
+        self._obs_stamp    = 0.0
 
-        self.get_logger().info('BehaviorManager 준비 완료')
+        self.get_logger().info('BehaviorManager(APF) 준비 완료')
 
     # ── 구독 콜백 ──────────────────────────────────────────────────────────────
 
@@ -72,47 +79,42 @@ class BehaviorManager(Node):
 
     def _cb_obs(self, msg: String):
         self._obs_stamp = time.monotonic()
-        parts = msg.data.split(':')
-        self._obs_state = parts[0]
-        if len(parts) == 2:
-            try:
-                self._avoid_dir = int(parts[1])
-            except ValueError:
-                pass
+        if msg.data == 'clear':
+            self._has_obs = False
+            return
+        try:
+            fx, fy, mf = (float(x) for x in msg.data.split(':'))
+        except (ValueError, TypeError):
+            self._has_obs = False
+            return
+        self._rep_fx, self._rep_fy, self._min_front = fx, fy, mf
+        self._has_obs = True
 
-    # ── Behavior Tree 셀렉터 ───────────────────────────────────────────────────
+    # ── APF 합성 제어 ──────────────────────────────────────────────────────────
 
     def _select_and_publish(self):
-        # obstacle 메시지 타임아웃 시 clear 처리
-        obs = self._obs_state
-        if time.monotonic() - self._obs_stamp > OBS_TIMEOUT:
-            obs = 'clear'
+        # 타임아웃 시 장애물 정보 무효화
+        active = self._has_obs and (time.monotonic() - self._obs_stamp <= OBS_TIMEOUT)
 
-        if obs == 'stop':
-            self._avoid_locked = self._avoid_dir
-            linear  = 0.0
-            angular = float(self._avoid_locked) * MAX_ANGULAR
-            self.get_logger().info(f'[BT] STOP → ang={angular:+.1f}')
+        if not active:
+            self._publish(self._lane_linear, self._lane_angular)
+            return
 
-        elif obs == 'avoid':
-            if self._avoid_locked is None:
-                self._avoid_locked = self._avoid_dir
-            linear  = MIN_SPEED * 1.5
-            angular = float(self._avoid_locked) * MAX_ANGULAR
-            self.get_logger().info(f'[BT] AVOID → spd={linear:.2f} ang={angular:+.1f}')
+        # 근접도 factor: SLOW_DIST→1.0(멀다), STOP_DIST→0.0(가깝다)
+        factor = _clip((self._min_front - STOP_DIST) / (SLOW_DIST - STOP_DIST),
+                       0.0, 1.0)
 
-        elif obs == 'warn':
-            if self._avoid_locked is None:
-                self._avoid_locked = self._avoid_dir
-            avoid_ang = float(self._avoid_locked) * MAX_ANGULAR * 0.6
-            angular   = 0.5 * self._lane_angular + 0.5 * avoid_ang
-            linear    = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * 0.25
+        # 장애물 근접 시 차선 인력 감쇠 → 척력이 회피를 주도 (곡선서 인력에 안 짐)
+        lane_w  = LANE_MIN + (1.0 - LANE_MIN) * factor
+        angular = _clip(lane_w * self._lane_angular + K_REP * self._rep_fy,
+                        -MAX_ANGULAR, MAX_ANGULAR)
 
-        else:  # clear
-            self._avoid_locked = None
-            linear  = self._lane_linear
-            angular = self._lane_angular
+        # 근접 시 감속 (STOP_DIST 이하면 정지)
+        linear = self._lane_linear * factor
 
+        self.get_logger().info(
+            f'[APF] fy={self._rep_fy:+.2f} d={self._min_front:.2f} '
+            f'laneW={lane_w:.2f} → spd={linear:.2f} ang={angular:+.2f}')
         self._publish(linear, angular)
 
     # ── 발행 헬퍼 ──────────────────────────────────────────────────────────────
