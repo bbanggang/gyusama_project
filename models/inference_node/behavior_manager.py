@@ -17,6 +17,7 @@ behavior_manager.py — APF(인공 포텐셜 필드) 기반 차선유지 + 장�
 
 import os
 import time
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
@@ -26,14 +27,32 @@ from std_msgs.msg import String
 
 _USE_STAMPED = os.environ.get('CMD_VEL_STAMPED', '0') == '1'
 
-# ─── 제어 파라미터 ─────────────────────────────────────────────────────────────
-MAX_ANGULAR = 0.5     # 1.1→0.8: 회피 회전량 추가 축소
-K_REP       = 0.8     # 척력(fy) → 각속도 변환 게인 (★주 튜닝 노브: 약하면↑, 차선이탈하면↓)
-LANE_MIN    = 0.35    # 0.2→0.35: 회피 중에도 차선 인력 유지 → 과도 이탈 억제
-SLOW_DIST   = 0.60    # 이 거리부터 감속 시작
-STOP_DIST   = 0.22    # 이 거리 이하면 정지
+# ─── YAML 파라미터 로드 (config/apf_params.yaml) ──────────────────────────────
+def _load_params():
+    cfg_path = Path(__file__).resolve().parents[2] / 'config' / 'apf_params.yaml'
+    defaults = dict(
+        max_angular=0.5, k_rep=0.8, lane_min=0.35,
+        slow_dist=0.60, stop_dist=0.22, obs_timeout=0.5,
+    )
+    if not cfg_path.exists():
+        return defaults
+    try:
+        import yaml
+        data = yaml.safe_load(cfg_path.read_text()) or {}
+        p = data.get('behavior_manager', {})
+        return {k: p.get(k, v) for k, v in defaults.items()}
+    except Exception:
+        return defaults
 
-OBS_TIMEOUT = 0.5     # /obstacle/state 가 이 시간(초) 이상 없으면 clear
+_P = _load_params()
+
+# ─── 제어 파라미터 ─────────────────────────────────────────────────────────────
+MAX_ANGULAR = float(_P['max_angular'])
+K_REP       = float(_P['k_rep'])
+LANE_MIN    = float(_P['lane_min'])
+SLOW_DIST   = float(_P['slow_dist'])
+STOP_DIST   = float(_P['stop_dist'])
+OBS_TIMEOUT = float(_P['obs_timeout'])
 
 
 def _clip(v, lo, hi):
@@ -64,7 +83,9 @@ class BehaviorManager(Node):
         self._has_obs      = False    # 영향권 내 장애물 존재 여부
         self._obs_stamp    = 0.0
 
-        self.get_logger().info('BehaviorManager(APF) 준비 완료')
+        self.get_logger().info(
+            f'BehaviorManager(APF) 준비 완료 | K_REP={K_REP} MAX_ANG={MAX_ANGULAR} '
+            f'SLOW={SLOW_DIST} STOP={STOP_DIST}')
 
     # ── 구독 콜백 ──────────────────────────────────────────────────────────────
 

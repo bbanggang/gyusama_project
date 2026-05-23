@@ -18,25 +18,47 @@ APF 방식:
 
 import math
 import os
+from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
+# ─── YAML 파라미터 로드 (config/apf_params.yaml) ──────────────────────────────
+def _load_params():
+    cfg_path = Path(__file__).resolve().parents[2] / 'config' / 'apf_params.yaml'
+    defaults = dict(
+        influence=0.65, front_deg=22, scan_half=90,
+        min_obs_points=5, latch_dist=0.55,
+        release_frames=2, flip_frames=4, fy_eps=0.05,
+        lidar_offset_deg=0,
+    )
+    if not cfg_path.exists():
+        return defaults
+    try:
+        import yaml
+        data = yaml.safe_load(cfg_path.read_text()) or {}
+        p = data.get('obstacle_node', {})
+        return {k: p.get(k, v) for k, v in defaults.items()}
+    except Exception:
+        return defaults
+
+_P = _load_params()
+
 # ─── APF 척력 파라미터 ─────────────────────────────────────────────────────────
-INFLUENCE  = 0.65   # 척력 영향권 (이 거리 밖은 무시) — 너무 일찍 반응 방지
-FRONT_DEG  = 22     # 22→16: latch 유지 시간(=회전량) 추가 축소
-SCAN_HALF  = 90     # 척력 합성 스캔 범위 (로봇 ±90°)
-MIN_OBS_POINTS = 5  # 영향권 내 포인트 수 미만 → clear (모서리·노이즈 오탐 방지)
-LATCH_DIST = 0.55   # 이 거리 안에서 회피 방향을 고정(latch) → 진동 방지
-RELEASE_FRAMES = 2  # 전방이 LATCH_DIST 밖으로 연속 N프레임 멀어져야 latch 해제 (노이즈 디바운스)
-FLIP_FRAMES = 4     # 반대 방위가 연속 N프레임 지속되면 회피 방향 전환 (다음 장애물 대응)
-FY_EPS = 0.05       # |fy| 가 이 값 초과면 장애물 방위가 명확 → fy 부호로 방향 결정
+INFLUENCE      = float(_P['influence'])
+FRONT_DEG      = int(_P['front_deg'])
+SCAN_HALF      = int(_P['scan_half'])
+MIN_OBS_POINTS = int(_P['min_obs_points'])
+LATCH_DIST     = float(_P['latch_dist'])
+RELEASE_FRAMES = int(_P['release_frames'])
+FLIP_FRAMES    = int(_P['flip_frames'])
+FY_EPS         = float(_P['fy_eps'])
 
 # Isaac Sim: LiDAR 0°가 로봇 후방을 향함 → 180° 오프셋 필요 (실물=0)
-# 실측 정합: offset 적용 후 idx()의 +deg = 물리적 로봇 왼쪽, -deg = 오른쪽
-LIDAR_OFFSET_DEG = int(os.environ.get('LIDAR_OFFSET_DEG', '0'))
+# 환경변수 LIDAR_OFFSET_DEG 가 config 파일보다 우선
+LIDAR_OFFSET_DEG = int(os.environ.get('LIDAR_OFFSET_DEG', str(_P['lidar_offset_deg'])))
 
 # fy 부호 규약(발행값): fy>0 → behavior_manager 좌회전(+angular), fy<0 → 우회전
 #   왼쪽 장애물(+deg) 은 우회전(fy<0) 필요 → sin 항에 음부호
@@ -107,7 +129,9 @@ class ObstacleNode(Node):
         self._far_cnt   = 0      # 전방이 LATCH_DIST 밖으로 연속 멀어진 프레임 수
         self._flip_cnt  = 0      # 반대편이 연속 더 열린 프레임 수 (방향 전환 카운터)
 
-        self.get_logger().info('ObstacleNode 준비 완료')
+        self.get_logger().info(
+            f'ObstacleNode 준비 완료 | influence={INFLUENCE} latch={LATCH_DIST} '
+            f'lidar_offset={LIDAR_OFFSET_DEG}°')
 
     def _cb_scan(self, msg: LaserScan):
         result = compute_repulsion(
