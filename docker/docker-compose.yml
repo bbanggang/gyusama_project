@@ -71,7 +71,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=1
       - TURTLEBOT3_MODEL=burger
-      - LDS_MODEL=ld08               # LiDAR 모델 (ld08 / lds_01 / hls_lfcd_lds)
+      - LDS_MODEL=LDS-02              # LiDAR 모델: LDS-01 / LDS-02(ld08) / LDS-03
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
     command: ros2 launch turtlebot3_bringup robot.launch.py
     restart: unless-stopped
