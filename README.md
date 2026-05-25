@@ -449,116 +449,69 @@ IMX219 카메라 → /camera/image_raw → 추론 노드 → /lane_detection →
 
 ---
 
-### 10주차 (5/6) — 분산 시스템을 위한 DDS 통신 튜닝
+### 10주차 (5/6) — RPi5 실물 배포 및 노드 기동 검증
 
 #### 이번 주 목표
-PC ↔ RPi5 무선 환경에서 대용량 센서 데이터를 안정적으로 전송하기 위한 QoS 프로필을 설계한다.
+Isaac Sim에서 검증된 APF 장애물 회피 시스템을 RPi5에 배포하고, 카메라·LiDAR·모터 전체 노드 기동 및 장애물 감지 동작을 확인한다.
 
-#### 세부 작업
+#### 주요 구현
 
-**10-1. FastDDS QoS 프로필 설계**
-```xml
-<!-- fastdds_profile.xml -->
-<profiles>
-  <participant profile_name="gyusama">
-    <rtps>
-      <builtin>
-        <discovery_config>
-          <discoveryProtocol>SIMPLE</discoveryProtocol>
-        </discovery_config>
-      </builtin>
-    </rtps>
-  </participant>
-</profiles>
-```
-
-- 카메라 토픽: `BEST_EFFORT` + 낮은 depth (최신 프레임만 유지)
-- 제어 명령: `RELIABLE` (손실 없이 전달 보장)
-
-**10-2. Latency 측정 및 병목 제거**
-
-#### 용어 정리
-
-| 용어 | 설명 |
-|------|------|
-| **DDS** | Data Distribution Service — ROS2의 기반 통신 미들웨어 |
-| **FastDDS** | eProsima에서 만든 DDS 구현체, ROS2 기본 통신 엔진 |
-| **QoS (Quality of Service)** | 통신 품질 설정 — 신뢰성, 지연, 대역폭 등을 조절 |
-| **BEST_EFFORT** | 빠르지만 데이터 손실 가능 — 카메라처럼 최신 데이터만 중요한 경우 |
-| **RELIABLE** | 느리지만 데이터 손실 없음 — 제어 명령처럼 정확성이 중요한 경우 |
-| **Latency** | 데이터가 출발지에서 도착지까지 걸리는 시간 (지연 시간) |
+- APF 파라미터 YAML 외부화 (`config/apf_params.yaml`) — 재빌드 없이 현장 튜닝
+- 노드 헬스 모니터링 (`scripts/monitor_nodes.py`) — FPS·장애물 상태 실시간 출력
+- RPi5 배포 자동화 (`scripts/deploy_rpi5.sh`) — rsync + Docker 원커맨드
+- LiDAR 드라이버 수정 — `LDS_MODEL=LDS-02`, `ros-jazzy-ld08-driver` Dockerfile 추가
 
 #### 완료 기준
-- [ ] FastDDS QoS XML 프로필 작성 완료
-- [ ] PC ↔ RPi5 간 이미지 토픽 전송 지연 100ms 이하 달성
-- [ ] 무선 환경에서 토픽 손실률 5% 이하 확인
+- [x] RPi5 전체 노드 기동 확인 (camera / inference / obstacle / behavior / control)
+- [x] LiDAR `/scan` 데이터 수신 확인 (9.4 Hz)
+- [x] 장애물 감지 → 정지 동작 확인
+- [⏸] 차선 추종 + 장애물 회피 동시 주행 — NPU 장착 후 진행 (추론 FPS 2~3으로 부족)
+
+> 상세 내용: [`weeks_work/week10/README.md`](weeks_work/week10/README.md)
 
 ---
 
-### 11주차 (5/13) — Nav2 기반 행동 트리 설계
+### 11주차 (5/13) — NPU 장착 및 추론 FPS 개선
 
 #### 이번 주 목표
-Nav2 프레임워크로 장애물 회피, 경로 재탐색 등의 주행 로직을 설계하고, 가상 환경에서 글로벌/로컬 경로 계획기를 튜닝한다.
+NPU를 RPi5에 장착하여 추론 FPS를 10+ 이상으로 개선하고, 차선 추종 + 장애물 회피 동시 주행을 실물에서 검증한다.
 
-#### 세부 작업
+#### 주요 구현
 
-**11-1. Behavior Tree 설계**
-- Groot GUI를 사용하여 주행 시나리오를 시각적으로 구성.3
-- 차선 추종 ↔ 장애물 회피 간 우선순위 전환 로직
-
-**11-2. 경로 계획기 파라미터 튜닝**
-- 글로벌 플래너: NavFn 또는 Smac Planner (전체 경로 계산)
-- 로컬 플래너: DWB (Dynamic Window Based) — 실시간 장애물 회피
-- TurtleBot3의 최대 속도, 가속도, 회전 반경에 맞게 파라미터 조정
-
-#### 용어 정리
-
-| 용어 | 설명 |
-|------|------|
-| **Nav2** | ROS2의 자율 내비게이션 프레임워크 — 경로 계획, 장애물 회피, 위치 추정 |
-| **Behavior Tree (BT)** | 로봇의 행동을 트리 구조로 정의하는 의사결정 프레임워크 |
-| **Groot** | Behavior Tree를 GUI로 편집·시각화하는 도구 |
-| **글로벌 플래너** | 지도 전체를 보고 출발지→목적지 최적 경로를 계산 |
-| **로컬 플래너** | 로봇 주변만 보고 실시간으로 장애물을 회피하며 이동 |
-| **Costmap** | 로봇이 이동 가능한/불가능한 영역을 수치로 표현한 격자 지도 |
-| **DWB** | Dynamic Window Based — 로봇의 속도/가속 한계를 고려한 로컬 플래너 |
+- NPU 드라이버 설치 및 `lane_detect.py` NPU execution provider 적용
+- 실물 APF 파라미터 튜닝 (`config/apf_params.yaml`)
+- Sim-to-Real 갭 분석 및 문서화
 
 #### 완료 기준
-- [ ] Behavior Tree 설계 완료 (차선 추종 + 장애물 회피 전환)
-- [ ] Isaac Sim 가상 환경에서 Nav2 경로 계획 동작 확인
-- [ ] 가상 장애물 배치 시 회피 경로 재계획 성공
+- [ ] NPU 장착 및 드라이버 설치
+- [ ] 추론 FPS 10 이상 달성
+- [ ] 차선 추종 + 장애물 회피 동시 주행 실물 확인
+- [ ] 실물 APF 파라미터 튜닝 완료
+- [ ] Sim-to-Real 갭 분석 문서화
+
+> 상세 내용: [`weeks_work/week11/README.md`](weeks_work/week11/README.md)
 
 ---
 
-### 12주차 (5/20) — ros2_control 기반 Dynamixel 통합 제어
+### 12주차 (5/20) — 최종 시연 준비 및 배포 파이프라인 완성
 
 #### 이번 주 목표
-가상 로봇과 실제 하드웨어를 동일한 인터페이스로 제어하는 추상화 계층을 구현하고, Dynamixel 모터를 정밀 제어한다.
+Docker Hub 기반 배포 파이프라인으로 전환하고, 최종 시연을 준비한다.
 
-#### 세부 작업
+#### 주요 구현
 
-**12-1. Hardware Interface 설계**
-- ros2_control의 `HardwareInterface`를 구현하여 시뮬레이션/실제 전환 가능
-- `DiffDriveController`: `/cmd_vel` 토픽의 선속도·각속도 → 좌우 바퀴 속도 변환
-
-**12-2. Dynamixel SDK 통합**
-- Dynamixel SDK로 실제 모터 속도/위치 제어
-- 시뮬레이션 모드 ↔ 실제 모드 전환 가능한 구조
-
-#### 용어 정리
-
-| 용어 | 설명 |
-|------|------|
-| **ros2_control** | ROS2의 하드웨어 제어 프레임워크 — 시뮬레이션과 실제 HW를 동일하게 제어 |
-| **Hardware Interface** | 실제 모터/센서와 ROS2를 연결하는 추상화 계층 |
-| **DiffDriveController** | 차동 구동 로봇(좌우 바퀴 2개)을 위한 표준 컨트롤러 |
-| **Dynamixel** | ROBOTIS의 스마트 서보 모터 — 위치/속도/토크 제어 가능 |
-| **cmd_vel** | 로봇에 선속도(전진)와 각속도(회전)를 명령하는 ROS2 토픽 |
+- `docker buildx --platform linux/arm64` → Docker Hub push → RPi5 pull 방식 전환
+- 최종 시연 시나리오 검증 (차선 추종 완주율 90%, 장애물 회피 성공률 80%)
+- 최종 보고서 작성
 
 #### 완료 기준
-- [ ] ros2_control로 시뮬레이션 로봇 바퀴 제어 확인
-- [ ] Dynamixel SDK로 실제 모터 속도 제어 확인
-- [ ] `/cmd_vel` 토픽으로 실제 TurtleBot 이동 성공
+- [ ] Docker Hub 이미지 push (`bbanggang/gyusama-rpi5:latest`)
+- [ ] RPi5 `docker compose pull && up` 단독 실행 확인
+- [ ] 차선 추종 트랙 완주율 90% 이상
+- [ ] 장애물 회피 성공률 80% 이상
+- [ ] 최종 보고서 제출
+
+> 상세 내용: [`weeks_work/week12/README.md`](weeks_work/week12/README.md)
 
 ---
 
@@ -666,34 +619,41 @@ FastDDS QoS 프로필도 카메라용과 제어용으로 분리해서 만들어�
 
 ```
 gyusama-project/
-├── README.md                    # 이 파일
+├── README.md                        # 이 파일
+├── config/
+│   └── apf_params.yaml              # APF 파라미터 (재빌드 없이 튜닝)
 ├── docker/
-│   ├── Dockerfile.pc            # PC용 (x86_64)
-│   ├── Dockerfile.rpi5          # RPi5용 (ARM64)
-│   ├── docker-compose.yml       # 서비스 통합 실행
-│   └── fastdds_profile.xml      # DDS QoS 설정
-├── src/
-│   ├── lane_detection/          # YOLOv8 차선 인식 패키지
-│   ├── inference_node/          # RPi5 엣지 추론 노드
-│   ├── nav2_config/             # Nav2 설정 + Behavior Tree
-│   └── turtlebot3_control/      # ros2_control + Dynamixel
+│   ├── Dockerfile.pc                # PC용 (x86_64)
+│   ├── Dockerfile.rpi5              # RPi5용 (ARM64)
+│   ├── docker-compose.yml           # RPi5 서비스 통합 실행
+│   ├── docker-compose.sim.yml       # Isaac Sim 서비스
+│   └── entrypoint.sh
 ├── isaac_sim/
-│   ├── turtlebot3.usd           # 변환된 로봇 모델
-│   ├── track_environment.usd    # 주행 트랙 환경
-│   ├── domain_randomization.py  # 합성 데이터 생성
-│   └── ros2_bridge_config.py    # ROS2 브릿지 설정
+│   ├── assets/                      # TurtleBot3 USD 모델
+│   ├── generate_synthetic_data.py   # 합성 데이터 생성
+│   ├── run_track_sim.py             # 트랙 시뮬레이션 실행
+│   └── ...
 ├── models/
-│   ├── yolov8_lane.pt           # 학습된 PyTorch 모델
-│   ├── yolov8_lane.onnx         # ONNX 변환 모델
-│   └── yolov8_lane_int8.onnx    # INT8 양자화 모델
+│   ├── inference_node/              # RPi5 실행 ROS2 노드
+│   │   ├── lane_detect.py           # 차선 추종 노드
+│   │   ├── obstacle_node.py         # LiDAR 장애물 감지 노드
+│   │   └── behavior_manager.py      # APF 행동 조정 노드
+│   ├── training/                    # 모델 학습 스크립트
+│   │   ├── train_yolo_lane.py
+│   │   └── quantize_onnx.py
+│   └── runs/                        # 학습된 모델 가중치
+│       └── lane_det-3/weights/
+│           ├── best.onnx            # FP32 모델 (640×640)
+│           └── best_int8.onnx       # INT8 양자화 모델
+├── scripts/
+│   ├── deploy_rpi5.sh               # PC → RPi5 배포 자동화
+│   ├── monitor_nodes.py             # 노드 헬스 모니터링
+│   └── ...
 ├── data/
-│   ├── synthetic/               # Isaac Sim 합성 데이터
-│   ├── real/                    # 실제 주행 데이터
-│   └── calibration/             # 카메라 캘리브레이션 데이터
-└── configs/
-    ├── nav2_params.yaml          # Nav2 파라미터
-    ├── camera_calibration.yaml   # 카메라 보정 값
-    └── turtlebot3_params.yaml    # 로봇 물리 파라미터
+│   └── synthetic/                   # Isaac Sim 합성 데이터
+└── weeks_work/
+    ├── week1/ ~ week12/             # 주차별 진행 보고
+    └── history/                     # 초기 작업 기록
 ```
 
 ---
