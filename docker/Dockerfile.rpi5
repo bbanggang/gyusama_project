@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-dynamixel-sdk \
     ros-jazzy-cv-bridge \
     ros-jazzy-camera-ros \
+    ros-jazzy-ld08-driver \
     python3-argcomplete \
     python3-pip \
     python3-opencv \

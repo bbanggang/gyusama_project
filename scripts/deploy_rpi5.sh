@@ -39,11 +39,14 @@ rsync -avz --progress \
     --exclude='*.pyc' \
     --exclude='.venv_train/' \
     --exclude='data/' \
-    --exclude='runs/' \
+    --exclude='/runs/' \
+    --include='models/runs/' \
+    --include='models/runs/*/' \
+    --include='models/runs/*/weights/' \
+    --include='models/runs/*/weights/best_int8.onnx' \
+    --include='models/runs/*/weights/best.onnx' \
     --exclude='models/runs/*/weights/*.pt' \
     --exclude='models/runs/*/weights/*.onnx' \
-    --filter='+ models/runs/*/weights/best_int8.onnx' \
-    --filter='+ models/runs/*/weights/best.onnx' \
     "${LOCAL_DIR}/" \
     "${RPI5_USER}@${RPI5_HOST}:${RPI5_DIR}/"
 

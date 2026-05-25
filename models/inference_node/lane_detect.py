@@ -79,14 +79,16 @@ class YoloDetector:
         self.input_name = inp.name
         self.out_names  = [o.name for o in self.sess.get_outputs()]
         self.last_infer_ms = 0.0
+        # 모델 입력 크기를 동적으로 읽어 전처리에 사용
+        self.infer_sz = int(inp.shape[2])
         print(f"[YOLO] 모델 로드: {onnx_path}")
-        print(f"[YOLO] 입력: {inp.name} {inp.shape}")
+        print(f"[YOLO] 입력: {inp.name} {inp.shape}  (infer_sz={self.infer_sz})")
         outs_info = [(o.name, o.shape) for o in self.sess.get_outputs()]
         print(f"[YOLO] 출력: {outs_info}")
 
     def _preprocess(self, bgr: np.ndarray) -> np.ndarray:
         import cv2
-        img = cv2.resize(bgr, (YOLO_SZ, YOLO_SZ))
+        img = cv2.resize(bgr, (self.infer_sz, self.infer_sz))
         img = img[:, :, ::-1].astype(np.float32) / 255.0
         return np.ascontiguousarray(img.transpose(2, 0, 1)[None])
 
@@ -132,8 +134,8 @@ class YoloDetector:
         raw_h    = pred[3]
         scores   = pred[4]   # nc=1 이므로 마지막 행이 클래스 0 신뢰도
 
-        # ROI 필터: cy > YOLO_SZ * LANE_ROI_TOP_RATIO 인 박스만 유지
-        roi_top_px = YOLO_SZ * LANE_ROI_TOP_RATIO
+        # ROI 필터: cy > infer_sz * LANE_ROI_TOP_RATIO 인 박스만 유지
+        roi_top_px = self.infer_sz * LANE_ROI_TOP_RATIO
         pre_idx = np.where((scores > CONF_THRESH) & (raw_cy > roi_top_px))[0]
 
         if pre_idx.size == 0:
@@ -145,8 +147,8 @@ class YoloDetector:
         valid_idx = pre_idx[keep]
 
         h_orig, w_orig = bgr.shape[:2]
-        sx = w_orig / YOLO_SZ
-        sy = h_orig / YOLO_SZ
+        sx = w_orig / self.infer_sz
+        sy = h_orig / self.infer_sz
 
         results = []
         for i in valid_idx:
