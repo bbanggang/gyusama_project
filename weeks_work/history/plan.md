@@ -1,31 +1,94 @@
 # gyusama-project 최종 진행 계획 — NPU 도입 후 시연까지
 
-> NPU(Hailo-8L) 도착 완료 → 640×640 재학습 + 실시간 추론 검증 → 실세계 파라미터 튜닝 →
+> NPU(Hailo-8L) 도착 완료 → 모델 학습/HEF 변환 → 실시간 추론 검증 → 실세계 파라미터 튜닝 →
 > 최종 시연 + 보고서 완성까지의 단계별 계획.
 >
 > **전체 흐름**
 > ```
-> Phase 1 NPU 셋업 → Phase 2 640 재학습 → Phase 3 HEF 변환 →
+> Phase 1 NPU 셋업 → Phase 2 모델 학습 → Phase 3 HEF 변환 →
 > Phase 4 추론 노드 교체 → Phase 5 FPS 검증 → Phase 6 실세계 튜닝 →
 > Phase 7 통합 시나리오 → Phase 8 안정성 보완 → Phase 9 시연/보고서
 > ```
->
-> **현재 baseline** (NPU 도입 전 기준 — 2026-06-04 PC 측 검증)
-> - 모델: YOLOv8n 320×320 NCNN, mAP@50 = 0.95931 ✅ 파일로 확인
-> - RPi5 FPS: 13~15 (콜백 66~77 ms) — 이전 RPi5 실측 로그 인용
->
-> **저장소 측 검증 완료 (확정)**
-> - FastDDS XML **영구 설정 없음** → Phase 8-②
-> - 컨테이너 **로그 회전 미설정** → Phase 8-③
-> - Dockerfile에 **HailoRT 미설치** → Phase 1
-> - `compute_lane_offset` NCNN/ONNX **2곳 중복 정의** → Phase 4 선행 리팩토링
-> - control-node에 **healthcheck 없음** (코드/설정 확인) → Phase 8-① 인프라 측면은 보강 가능
->
-> **재검증 필요 (실물 확인 후 처리)**
-> - ⚠️ 카메라 좌측 편향 (`LANE off +0.24~+0.32`): 이전 세션 로그에만 존재 → **Phase 6 시작 시 RPi5 재주행으로 재현 여부 먼저 확인**, 없으면 `center_bias_px` 추가 작업 스킵
-> - ⚠️ turtlebot3_node stack smashing: 이전 1회 발생 → **상시 재현되는지 확인**, 일시적 문제라면 healthcheck로 충분, 상습적이면 USB/펌웨어 점검 필요
->
-> 통합 BT는 시뮬에서만 검증, 실물 미완.
+
+---
+
+## 📊 진행 현황 (2026-06-05 00:40 갱신)
+
+| Phase | 상태 | 결과 |
+|-------|------|------|
+| **1. NPU 셋업** | ✅ 완료 | Hailo-8 칩 / **HAILO8L 모드** 확인, /dev/hailo0 ↔ 컨테이너 마운트 검증. 이슈 7건 정리 → `npu.md`, 재사용 가이드 → `npu_setup_guide.md` |
+| **2. 모델 학습** | ✅ 완료 (4차 시도) | **`lane_det-6`: yolov8n 320×320, mAP@50=0.9621, mAP@50-95=0.8617, last20 std=0.0075** (역대 최저 진동) |
+| **3. HEF 변환** | ✅ 완료 | `lane_det-6/weights/best.hef` (9.5MB), **벤치마크 217 FPS, HW Latency 3.97ms** |
+| **4. lane_detect_hailo.py** | 🔄 진행 중 | 노드 코드 작성 완료. **DFL 디코딩 후처리 추가 필요** (HEF 출력이 raw 2개 분리) |
+| **5. FPS 검증** | ⏸ 대기 | Phase 4 종료 후 실주행 콜백 측정 |
+| **6. 실세계 튜닝** | ⏸ 대기 | 카메라 오프셋/APF |
+| **7. 통합 시나리오** | ⏸ 대기 | |
+| **8. 안정성 보완** | ⏸ 대기 | healthcheck, 로깅, FastDDS XML |
+| **9. 시연 + 보고서** | ⏸ 대기 | |
+
+### Phase 1~3 실측치 (NCNN baseline 대비)
+
+| 지표 | NCNN baseline | **Hailo-8L (HEF)** | 향상 |
+|------|---------------|---------------------|------|
+| 모델 | YOLOv8n 320 NCNN | YOLOv8n 320 HEF INT8 | 동일 구조, INT8 양자화 |
+| 학습 데이터 | 1002장 (구) | **2000장 다양화** (신) | data/synthetic 갱신 |
+| mAP@50 | 0.959 | **0.962** | +0.3%p |
+| **FPS (벤치마크)** | 13~15 | **217.7** | **≈ 15×** |
+| HW Latency | 27~33ms | **3.97ms** | ≈ 7× |
+| NPU 활용도 | n/a | 50% 미만 (4/8 cluster, 60% util) | 여유 큼 |
+
+### Phase 2 시행착오 요약 (4차 시도)
+
+| 시도 | 모델 | 입력 | 데이터 | best mAP@50 | last20 std | 결과 |
+|------|------|------|--------|-------------|-----------|------|
+| 1차 (lane_det-2) | yolov8s | 640 | 1002장 (구) | 0.9418 | 0.196 | 진동 심함 |
+| 2차 (lane_det-4) | yolov8s | 640 | **2000장 다양화** | 0.9220 | 0.0331 | 진동 안정, but mAP 낮음 |
+| 3차 (lane_det-5) | yolov8n | 640 | 2000장 다양화 | 0.9539 | 0.0091 | 진동 매우 안정 |
+| **4차 (lane_det-6) ✅** | **yolov8n** | **320** | **2000장 다양화** | **0.9621** | **0.0075** | **최종** |
+
+### Phase 3 시행착오 요약
+
+| 시도 | 접근 | 결과 |
+|------|------|------|
+| 1차 | `hailomz compile yolov8s` (Model Zoo NMS 포함) | ❌ `expected conv but found activation` (nc=1 모델은 표준 yolov8s NMS와 호환 X) |
+| 2차 | `hailo parser/optimize/compiler` 3단계 (NMS 미포함) | ❌ `concat14: Agent infeasible` (yolov8s 640 모델이 8L에 과부하) |
+| 3차 | + `performance_param(compiler_optimization_level=max)` | ❌ `No valid partition found` (여전히 큼) |
+| 4차 | yolov8n 640으로 다운사이즈 + 같은 옵션 | ❌ `No valid partition found` (입력 640이 큼) |
+| **5차 ✅** | **yolov8n 320으로 다운사이즈** | ✅ Multi-context 4개로 분할 + HEF 생성 |
+
+**부수 발견**:
+- `hailo optimize`는 캘리브셋을 **`.npy` 파일**로만 받음 (PNG 직접 X) → `compile_hef.sh`에 PNG→NPY 자동 변환 추가
+- 캘리브셋 100장은 권장(1024)에 미달 → "optimization level 0" 경고 (양자화 정확도 약간 손실, mAP 영향 확인 필요)
+- compile_hef.sh는 ONNX 입력 shape 자동 감지로 NPY 크기 조정 (320/640 양쪽 대응)
+
+### Phase 4 추가 작업 — HEF 출력 형식
+
+```
+HEF 출력 (Hailo가 end_node를 yolov8 detection head 직전에 끊음):
+  ① concat14:    UINT8 FCR (1, 2100, 64)   — DFL encoded bbox (16 bins × 4 coords)
+  ② activation1: UINT8 FCR (1, 2100, 1)    — confidence (sigmoid 적용된 raw)
+```
+
+현재 `lane_detect_hailo.py`가 지원하는 형식:
+- ① NMS 미포함 `[1, 5, 8400]` (ONNX/NCNN 호환)
+- ② NMS 포함 `[N, 6]` (Hailo Model Zoo 디폴트)
+
+**→ ③ DFL 디코딩 후처리 추가 필요** (Phase 4 작업):
+- 64채널 → reshape `(N, 4, 16)` → softmax → expectation → 4개 bbox distances
+- Anchor grid (stride 8/16/32 → 2100 anchors) 생성 + 캐시
+- bbox 좌표 계산: `cx = anchor_cx + (r-l)/2 * stride`, `cy = anchor_cy + (b-t)/2 * stride`, `w = (l+r)*stride`, `h = (t+b)*stride`
+
+---
+
+## 📝 저장소 측 검증 완료 (확정 — 기존)
+- FastDDS XML **영구 설정 없음** → Phase 8-②
+- 컨테이너 **로그 회전 미설정** → Phase 8-③
+- `compute_lane_offset` NCNN/ONNX **2곳 중복 정의** → Phase 4 선행 리팩토링 (`lane_common.py` 추출 완료)
+- control-node에 **healthcheck 없음** → Phase 8-①
+
+## 🔍 재검증 필요 (실물 확인 후 처리 — 기존)
+- ⚠️ 카메라 좌측 편향 (`LANE off +0.24~+0.32`): Phase 6 시작 시 RPi5 재주행으로 재현 여부 먼저 확인
+- ⚠️ turtlebot3_node stack smashing: 상시 재현되는지 30분+ 운영하며 빈도 측정
 
 ---
 

@@ -125,6 +125,92 @@ class HailoYoloDetector:
         for o in self.out_infos:
             print(f"[HAILO] 출력: {o.name} shape={o.shape}")
 
+        # ── DFL 후처리용 anchor grid (lazy 캐시) ─────────────────────
+        # YOLOv8: 3개 stride (8, 16, 32) × feature map = 총 anchor 수
+        # 320 입력 → 40×40 + 20×20 + 10×10 = 2100 anchor
+        # 640 입력 → 80×80 + 40×40 + 20×20 = 8400 anchor
+        self._anchor_grid: np.ndarray | None = None   # shape (N, 3) — (cx, cy, stride)
+
+    def _get_anchor_grid(self, input_size: int) -> np.ndarray:
+        """YOLOv8 표준 anchor grid 생성 + 캐시.
+
+        Returns
+        -------
+        np.ndarray (N, 3)  → (center_x, center_y, stride)  in 입력 픽셀 단위
+        """
+        if self._anchor_grid is not None and len(self._anchor_grid) == self._cached_anchor_count(input_size):
+            return self._anchor_grid
+
+        anchors = []
+        for stride in (8, 16, 32):
+            feat = input_size // stride
+            ys, xs = np.meshgrid(np.arange(feat), np.arange(feat), indexing='ij')
+            cx = (xs.flatten() + 0.5) * stride
+            cy = (ys.flatten() + 0.5) * stride
+            s  = np.full_like(cx, stride, dtype=np.float32)
+            anchors.append(np.stack([cx, cy, s], axis=1))
+        self._anchor_grid = np.concatenate(anchors, axis=0).astype(np.float32)
+        return self._anchor_grid
+
+    @staticmethod
+    def _cached_anchor_count(input_size: int) -> int:
+        return sum((input_size // s) ** 2 for s in (8, 16, 32))
+
+    def _decode_dfl_outputs(self, bbox_raw: np.ndarray, conf_raw: np.ndarray,
+                            input_size: int, conf_thresh: float
+                            ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Hailo HEF의 raw 2개 출력 → bbox + conf 디코딩.
+
+        Parameters
+        ----------
+        bbox_raw : (N, 64)   — DFL encoded (16 bins × 4 coords)
+        conf_raw : (N,)      — sigmoid 적용된 confidence
+        input_size : int     — HEF 입력 크기 (한 변)
+        conf_thresh : float  — 임계값
+
+        Returns
+        -------
+        (cx, cy, w, h, scores)  모두 (M,)  — 입력 픽셀 단위, M=conf 필터 통과한 수
+        """
+        # 1) Conf 필터 (메모리 절약)
+        keep = conf_raw > conf_thresh
+        if not keep.any():
+            return (np.array([]),) * 5
+
+        bbox_kept = bbox_raw[keep]            # (M, 64)
+        conf_kept = conf_raw[keep]            # (M,)
+
+        # 2) DFL decode: (M, 64) → (M, 4, 16) → softmax → expectation
+        bbox_dfl = bbox_kept.reshape(-1, 4, 16)
+        # numerical stable softmax
+        mx = bbox_dfl.max(axis=-1, keepdims=True)
+        exp_d = np.exp(bbox_dfl - mx)
+        sm    = exp_d / exp_d.sum(axis=-1, keepdims=True)
+        bins  = np.arange(16, dtype=np.float32)
+        dist  = (sm * bins).sum(axis=-1)      # (M, 4) — (l, t, r, b) in stride 단위
+
+        # 3) Anchor 매핑
+        anchors = self._get_anchor_grid(input_size)
+        anchors_kept = anchors[keep]          # (M, 3) — (cx, cy, stride)
+        a_cx = anchors_kept[:, 0]
+        a_cy = anchors_kept[:, 1]
+        stride = anchors_kept[:, 2]
+
+        # 4) bbox: anchor + DFL distance × stride
+        l = dist[:, 0] * stride
+        t = dist[:, 1] * stride
+        r = dist[:, 2] * stride
+        b = dist[:, 3] * stride
+
+        x1 = a_cx - l;  y1 = a_cy - t
+        x2 = a_cx + r;  y2 = a_cy + b
+
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+        w  = x2 - x1
+        h  = y2 - y1
+        return cx, cy, w, h, conf_kept
+
     def close(self):
         try:
             self._infer_ctx.__exit__(None, None, None)
@@ -156,16 +242,60 @@ class HailoYoloDetector:
         results = self.infer_pipeline.infer(input_data)
         self.last_infer_ms = (time.perf_counter() - _t0) * 1000.0
 
-        # ── 3) 출력 해석 (두 가지 형식 모두 지원) ───────────────────
+        # ── 3) 출력 해석 (세 가지 형식 모두 지원) ───────────────────
         # results: dict[name -> ndarray]
-        # 단일 출력 가정 (yolov8 nc=1 컴파일 결과)
-        out_arr = next(iter(results.values()))
-
         h_orig, w_orig = bgr.shape[:2]
         sx = w_orig / YOLO_SZ
         sy = h_orig / YOLO_SZ
-
         boxes: list[dict] = []
+
+        # ── 형식 ③: Hailo DFL 원시 출력 두 개 (concat14 64ch + activation 1ch) ──
+        # (lane_det-6 HEF: hailo parser 가 yolov8 detection head 직전에서 끊은 결과)
+        if len(results) == 2:
+            bbox_raw: np.ndarray | None = None    # (1, 2100, 64)
+            conf_raw: np.ndarray | None = None    # (1, 2100, 1) 또는 (1, 2100)
+            for name, arr in results.items():
+                last = arr.shape[-1]
+                if last == 64:
+                    bbox_raw = arr.reshape(-1, 64)        # (N, 64)
+                elif last == 1 or arr.ndim == 2:
+                    conf_raw = arr.reshape(-1)            # (N,)
+
+            if bbox_raw is not None and conf_raw is not None:
+                cx_in, cy_in, w_in, h_in, scores = self._decode_dfl_outputs(
+                    bbox_raw, conf_raw, YOLO_SZ, CONF_THRESH)
+
+                if scores.size > 0:
+                    # ROI 컷 (입력 픽셀 단위 cy 기준)
+                    roi_top_px = YOLO_SZ * LANE_ROI_TOP_RATIO
+                    roi_keep = cy_in > roi_top_px
+                    if roi_keep.any():
+                        cx_in = cx_in[roi_keep]; cy_in = cy_in[roi_keep]
+                        w_in  = w_in[roi_keep];  h_in  = h_in[roi_keep]
+                        scores = scores[roi_keep]
+
+                        # NMS (lane class 한 종류)
+                        keep = common_nms(cx_in, cy_in, w_in, h_in, scores,
+                                          iou_thr=NMS_IOU_THR)
+                        for i in keep:
+                            boxes.append({
+                                "cx":   float(cx_in[i] * sx),
+                                "cy":   float(cy_in[i] * sy),
+                                "w":    float(w_in[i]  * sx),
+                                "h":    float(h_in[i]  * sy),
+                                "conf": float(scores[i]),
+                            })
+
+                # 좌/우 zone-best
+                zone_best: dict[int, dict] = {}
+                for box in boxes:
+                    zone = 0 if box["cx"] < w_orig / 2 else 1
+                    if zone not in zone_best or box["conf"] > zone_best[zone]["conf"]:
+                        zone_best[zone] = box
+                return list(zone_best.values())
+
+        # 단일 출력 가정 (yolov8 nc=1 컴파일 결과)
+        out_arr = next(iter(results.values()))
 
         # 형식 ②: NMS 포함 [batch, N, 6] 또는 [N, 6]  ([x, y, w, h, conf, cls])
         # 좌표는 보통 입력 픽셀 또는 [0,1] 정규화 — 둘 다 처리
