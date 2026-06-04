@@ -28,6 +28,27 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     ncnn \
     "numpy<2"
 
+# ── HailoRT 런타임 + Python 바인딩 (Hailo-8 NPU 추론용) ──────────────
+# PCIe 드라이버는 호스트 측 DKMS 모듈 사용 (컨테이너에서는 /dev/hailo0 만 마운트)
+# 4.23.0 / aarch64 / Python 3.12 (베이스 Ubuntu Noble 매치)
+#
+# 우회 처리: hailort.postinst가 `if [ ! -f /.dockerenv ]`로 Docker 환경 감지 후
+#   systemctl restart hailort.service 호출. buildkit/QEMU 빌드 환경에는
+#   /.dockerenv 가 없어 systemctl가 실행되며 exit 127. → 빌드 시 임시로 touch
+# wheel 파일명은 pip이 메타데이터({pkg}-{ver}-{py}-{abi}-{platform})로 파싱하므로
+# 원본 파일명 그대로 유지 (단순화하면 "not a valid wheel filename" 오류)
+COPY docker/hailo/hailort_4.23.0_arm64.deb /tmp/hailort.deb
+COPY docker/hailo/hailort-4.23.0-cp312-cp312-linux_aarch64.whl /tmp/hailort-4.23.0-cp312-cp312-linux_aarch64.whl
+RUN set -eux \
+ && touch /.dockerenv \
+ && apt-get update \
+ && dpkg -i /tmp/hailort.deb \
+ && apt-get install -fy --no-install-recommends \
+ && pip3 install --no-cache-dir --break-system-packages \
+      /tmp/hailort-4.23.0-cp312-cp312-linux_aarch64.whl \
+ && rm -f /tmp/hailort.deb /tmp/hailort-4.23.0-cp312-cp312-linux_aarch64.whl \
+ && rm -rf /var/lib/apt/lists/*
+
 # ── ROS2 환경 변수 ────────────────────────────────────────────────────
 ENV ROS_DOMAIN_ID=1
 ENV TURTLEBOT3_MODEL=burger

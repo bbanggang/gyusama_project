@@ -10,6 +10,8 @@ services:
     ipc: host                        # 호스트 /dev/shm 공유 (FastDDS SHM 전송)
     stdin_open: true                 # 's'/'q' 키 입력 수신
     tty: true
+    devices:
+      - /dev/hailo0:/dev/hailo0      # Hailo-8 NPU PCIe 디바이스 (호스트 DKMS 모듈 사용)
     volumes:
       - ~/gyusama-project/config:/ros2_ws/config          # 재빌드 없이 파라미터 튜닝
       - ~/gyusama-project/models/inference_node:/ros2_ws/models/inference_node  # 코드 핫 리로드
