@@ -118,10 +118,11 @@ class HailoYoloDetector:
 
         self.last_infer_ms = 0.0
         self._input_name = self.in_infos[0].name
-        # 입력 텐서 shape 안내 (디버그용)
+        # HEF 메타에서 입력 한 변 자동 감지 (YOLO_SZ 환경변수 무관 — 견고)
         in_shape = self.in_infos[0].shape  # 보통 (H, W, C)
+        self.input_size = int(in_shape[0])
         print(f"[HAILO] HEF 로드: {hef_path}")
-        print(f"[HAILO] 입력: {self._input_name} shape={in_shape} UINT8 NHWC")
+        print(f"[HAILO] 입력: {self._input_name} shape={in_shape} UINT8 NHWC → resize 한 변 {self.input_size}")
         for o in self.out_infos:
             print(f"[HAILO] 출력: {o.name} shape={o.shape}")
 
@@ -232,10 +233,24 @@ class HailoYoloDetector:
         """원본 BGR 이미지 → [{cx,cy,w,h,conf}] (원본 픽셀 단위)."""
         import cv2
 
-        # ── 1) 전처리: resize + RGB + UINT8 NHWC ────────────────────
-        img = cv2.resize(bgr, (YOLO_SZ, YOLO_SZ))
+        # ── 1) 전처리: resize + RGB + UINT8 NHWC (HEF 메타 기반 입력 크기) ─
+        if bgr.ndim == 3 and bgr.shape[-1] == 4:
+            bgr = bgr[:, :, :3]
+        sz = self.input_size  # HEF 메타에서 추출 — YOLO_SZ 환경변수 무관
+        img = cv2.resize(bgr, (sz, sz))
+        if img.ndim == 3 and img.shape[-1] == 4:
+            img = img[:, :, :3]
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        input_data = {self._input_name: np.expand_dims(rgb, axis=0).astype(np.uint8)}
+        input_arr = np.ascontiguousarray(rgb[np.newaxis, ...], dtype=np.uint8)
+
+        # 첫 호출 시 한 번만 shape/dtype 로그 (검증용)
+        if not hasattr(self, '_debug_logged'):
+            print(f"[HAILO DEBUG] bgr shape={bgr.shape} dtype={bgr.dtype}")
+            print(f"[HAILO DEBUG] resize 후 img shape={img.shape}")
+            print(f"[HAILO DEBUG] input_arr shape={input_arr.shape} nbytes={input_arr.nbytes}")
+            self._debug_logged = True
+
+        input_data = {self._input_name: input_arr}
 
         # ── 2) 추론 ─────────────────────────────────────────────────
         _t0 = time.perf_counter()
@@ -245,8 +260,8 @@ class HailoYoloDetector:
         # ── 3) 출력 해석 (세 가지 형식 모두 지원) ───────────────────
         # results: dict[name -> ndarray]
         h_orig, w_orig = bgr.shape[:2]
-        sx = w_orig / YOLO_SZ
-        sy = h_orig / YOLO_SZ
+        sx = w_orig / self.input_size
+        sy = h_orig / self.input_size
         boxes: list[dict] = []
 
         # ── 형식 ③: Hailo DFL 원시 출력 두 개 (concat14 64ch + activation 1ch) ──
@@ -263,11 +278,11 @@ class HailoYoloDetector:
 
             if bbox_raw is not None and conf_raw is not None:
                 cx_in, cy_in, w_in, h_in, scores = self._decode_dfl_outputs(
-                    bbox_raw, conf_raw, YOLO_SZ, CONF_THRESH)
+                    bbox_raw, conf_raw, self.input_size, CONF_THRESH)
 
                 if scores.size > 0:
                     # ROI 컷 (입력 픽셀 단위 cy 기준)
-                    roi_top_px = YOLO_SZ * LANE_ROI_TOP_RATIO
+                    roi_top_px = self.input_size * LANE_ROI_TOP_RATIO
                     roi_keep = cy_in > roi_top_px
                     if roi_keep.any():
                         cx_in = cx_in[roi_keep]; cy_in = cy_in[roi_keep]
@@ -348,7 +363,7 @@ class HailoYoloDetector:
         raw_w  = pred[2];  raw_h  = pred[3]
         scores = pred[4]
 
-        roi_top_px = YOLO_SZ * LANE_ROI_TOP_RATIO
+        roi_top_px = self.input_size * LANE_ROI_TOP_RATIO
         pre_idx = np.where((scores > CONF_THRESH) & (raw_cy > roi_top_px))[0]
         if pre_idx.size == 0:
             return []
@@ -477,16 +492,21 @@ class LaneDetectNode(Node):
 
     def _cb_image(self, msg: RosImage):
         import cv2
+        # cv_bridge 가 desired_encoding='bgr8' 으로 자동 변환 처리
+        # (bgra8 / rgba8 / xrgb8888 등 모든 4채널 → 3채널 bgr 로 통일)
         try:
-            if msg.encoding in ('bgra8', 'rgba8', 'xrgb8888'):
-                raw = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-                code = cv2.COLOR_RGBA2BGR if msg.encoding == 'rgba8' else cv2.COLOR_BGRA2BGR
-                bgr = cv2.cvtColor(raw, code)
-            else:
-                bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as e:
-            self.get_logger().error(f"이미지 변환 오류: {e}")
+            self.get_logger().error(
+                f"이미지 변환 오류: {e} (encoding={msg.encoding}, shape={msg.width}x{msg.height})")
             return
+        # 안전 가드: 혹시라도 3채널 BGR uint8 이 아니면 강제 변환
+        if bgr.dtype != np.uint8:
+            bgr = bgr.astype(np.uint8)
+        if bgr.ndim == 3 and bgr.shape[-1] == 4:
+            bgr = bgr[:, :, :3]
+        elif bgr.ndim == 2:
+            bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
 
         if os.environ.get('CAMERA_FLIP') == '1':
             bgr = cv2.flip(bgr, -1)
