@@ -41,12 +41,18 @@ behavior_manager:
 
 lane_detect:
   # 직선 최대 속도 (m/s) ★
-  max_speed: 0.21
+  max_speed: 0.14
   # 커브 최소 속도 (m/s) ★
-  min_speed: 0.12
-  # 조향 상한 (rad/s)
+  min_speed: 0.08
+  # 조향 각속도 상한 (rad/s)
   max_angular: 12.0
-  # 조향 P 게인
+  # 조향 P 게인 — 높으면 빠른 반응, 낮으면 진동 감소 ★
   kp_angular: 11.0
+  # 비선형 조향 지수 — 1.0=선형, >1.0=큰 오프셋에서 더 급격히 꺾음 ★
+  steer_exp: 1.4
   # 검출 신뢰도 임계값
   conf_thresh: 0.12
+  # 상단 ROI 컷 비율 (0~1, 이 비율 위는 무시)
+  lane_roi_top: 0.50
+  # 차선 추적 허용 픽셀 이동폭 (px) — 크면 느슨, 작으면 엄격
+  lane_track_thresh: 80

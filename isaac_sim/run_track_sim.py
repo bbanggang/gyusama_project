@@ -23,8 +23,22 @@ from isaacsim import SimulationApp
 # omni.graph.image.core: RTX 5070 Ti(Blackwell) cold-start segfault 우회
 # 카메라는 Replicator annotator + rclpy 직접 발행으로 획득 — 이 확장 불필요
 import os as _os
-sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
 _ENABLE_CAM = _os.environ.get("ENABLE_CAMERA", "0") == "1"
+
+# RTX 5070 Ti (Blackwell) — librtx.scenedb.plugin.so segfault 우회:
+#   launch_sim.sh 에서 .so → .so.bak 으로 이름 변경하여 로드 차단.
+#   추가로 Kit 확장 레벨에서도 RTX 렌더 파이프라인을 제외.
+#   USE_RTX=1 로 실행하면 RTX 렌더러 사용 (Isaac Sim 업데이트 후 테스트용).
+_USE_RTX = _os.environ.get("USE_RTX", "0") == "1"
+
+_excluded = ["--/app/extensions/excluded/0=omni.graph.image.core"]
+if not _USE_RTX:
+    _excluded += [
+        "--/app/extensions/excluded/1=omni.hydra.rtx",
+        "--/renderer/active=pxr",
+    ]
+    print("[INFO] Blackwell 우회: Storm(pxr) 렌더러 + RTX 플러그인 제외")
+sys.argv += _excluded
 
 simulation_app = SimulationApp({
     "headless": False,

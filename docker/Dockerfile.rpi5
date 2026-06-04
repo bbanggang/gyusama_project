@@ -35,8 +35,15 @@ ENV TURTLEBOT3_MODEL=burger
 # ── 작업 디렉토리 ─────────────────────────────────────────────────────
 WORKDIR /ros2_ws
 
+# ── 프로젝트 코드 내장 (빌드 컨텍스트: 프로젝트 루트) ─────────────────
+# .dockerignore 로 .pt 파일·학습 스크립트·불필요 디렉토리 제외
+COPY models/inference_node/ /ros2_ws/models/inference_node/
+COPY models/runs/           /ros2_ws/models/runs/
+COPY config/                /ros2_ws/config/
+
 # ── entrypoint: ROS2 환경 자동 소싱 ──────────────────────────────────
-COPY entrypoint.sh /entrypoint.sh
+# 빌드 컨텍스트가 프로젝트 루트이므로 docker/ 경로 명시
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]

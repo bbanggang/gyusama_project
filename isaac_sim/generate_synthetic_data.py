@@ -20,12 +20,18 @@ import math
 import random
 import numpy as np
 
-# RTX 5070 Ti(Blackwell) cold-start 충돌 우회
-sys.argv += ["--/app/extensions/excluded/0=omni.graph.image.core"]
+# RTX 5070 Ti(Blackwell) cold-start 충돌 우회 + ROS2 브리지 비활성화
+# run_track_sim.py 와 동일하게 Storm(pxr) 렌더러 사용 → 합성 데이터 외관 일치
+sys.argv += [
+    "--/app/extensions/excluded/0=omni.graph.image.core",
+    "--/app/extensions/excluded/1=isaacsim.ros2.bridge",
+    "--/app/extensions/excluded/2=omni.hydra.rtx",
+    "--/renderer/active=pxr",
+]
 
 from isaacsim import SimulationApp
 
-HEADLESS = os.environ.get("HEADLESS", "1") != "0"
+HEADLESS = os.environ.get("HEADLESS", "1") != "0"  # 580 드라이버: headless 배치 생성
 simulation_app = SimulationApp({
     "headless": HEADLESS,
     "experience": "/home/linux/isaac_env/lib/python3.11/site-packages/isaacsim/apps/isaacsim.exp.full.kit",
@@ -63,10 +69,10 @@ for split in ("train", "val"):
 # 차선인가 아닌가 2값 분류이므로 stop_line 별도 레이블 불필요
 CLASS_NAMES = ["lane"]
 
-# ─── 트랙 파라미터 (run_track_sim.py 동일) ────────────────────────────────────
-LANE = 0.22; TW = LANE * 2; LW = 0.02; EDGE = LANE - LW / 2
+# ─── 트랙 파라미터 (run_track_sim.py v8 동일) ────────────────────────────────
+LANE = 0.16; TW = LANE * 2; LW = 0.02; EDGE = LANE - LW / 2
 TH = 0.003; TZ = TH / 2; MH = 0.001; MZ = 0.005
-BY = -5.00; RX = 1.80; TY = 5.00; LX = -1.80
+BY = -1.87; RX = 1.80; TY = 8.13; LX = -1.80
 CY = (BY + TY) / 2
 BL = abs(RX - LX); VL = abs(TY - BY)
 R_CORNER = TW; R_IN = R_CORNER - EDGE; R_OUT = R_CORNER + EDGE
@@ -75,14 +81,6 @@ pvSE = (RX - R_CORNER, BY + R_CORNER)
 pvNE = (RX - R_CORNER, TY - R_CORNER)
 pvNW = (LX + R_CORNER, TY - R_CORNER)
 pvSW = (LX + R_CORNER, BY + R_CORNER)
-IH_X0 = LX + TW / 2; IH_X1 = RX - TW / 2
-CROSS_H = TW / 2; IH_SEG = -CROSS_H - IH_X0
-IV_Y0 = BY + TW / 2; IV_Y1 = TY - TW / 2
-CROSS_V = TW / 2
-IH_CX_W = (IH_X0 + (-CROSS_H)) / 2; IH_CX_E = (CROSS_H + IH_X1) / 2
-IV_CY_S = (IV_Y0 + (CY - CROSS_V)) / 2; IV_CY_N = ((CY + CROSS_V) + IV_Y1) / 2
-H2_Y = IV_CY_S; H3_Y = IV_CY_N
-SL_OFF = 0.10; SL_THK = 0.04
 EW = (0.7, 0.7, 0.7)
 ASPHALT = (0.05, 0.05, 0.05); WHITE = (1.00, 1.00, 1.00)
 DASH_ON = 0.06; DASH_OFF = 0.06; N_ARC = 14
@@ -167,22 +165,20 @@ def build_scene():
         color=Gf.Vec3f(0.02, 0.02, 0.02),  # 거의 검정 — 아스팔트 트랙과 일치
     )
 
-    # 조명 — 기준값 (루프 내에서 강도만 조정)
-    # 원래 DomeLight=600 / RectLight=28000 이 과다하여 이미지가 전부 흰색으로 날아감.
-    # 낮춘 값: DomeLight 50~200, RectLight 1000~5000 → 어두운 아스팔트 + 밝은 마킹 대비 확보.
+    # 조명 — DomeLight 50~200, RectLight 1000~5000 (루프 내에서 강도 랜덤화)
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
     dome.CreateIntensityAttr(120.0)
     rect = UsdLux.RectLight.Define(stage, "/World/RectLight")
     rect.CreateIntensityAttr(3000.0)
     rect.CreateWidthAttr(8.0); rect.CreateHeightAttr(14.0)
-    UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 8))
+    UsdGeom.XformCommonAPI(rect).SetTranslate(Gf.Vec3d(0, 0, 8))   # run_track_sim.py 와 동일: Y=0
     UsdGeom.XformCommonAPI(rect).SetRotate(Gf.Vec3f(-90, 0, 0))
 
-    # 아스팔트 바닥
-    _box(stage, "/World/Ground", 0, 0, -0.005, 6.0, 12.0, 0.01,
+    # 아스팔트 바닥 (트랙 전체 커버)
+    _box(stage, "/World/Ground", 0, CY, -0.005, 6.0, 14.0, 0.01,
          "asphalt", ASPHALT, rough=0.9)
 
-    # ── 트랙 직선
+    # ── 트랙 표면
     UsdGeom.Scope.Define(stage, "/World/Track")
     for nm, cx, cy, sx, sy in [
         ("Bot",   0.0, BY,  BL_inner, TW),
@@ -200,37 +196,21 @@ def build_scene():
              pvx + sx_s * R_OUT / 2, pvy + sy_s * R_OUT / 2, TZ,
              R_OUT, R_OUT, TH, "track", ASPHALT, rough=0.9)
 
-    # ── 내부 십자 도로
-    UsdGeom.Scope.Define(stage, "/World/InnerRoad")
-    for nm, cx, cy, sx, sy in [
-        ("HW", IH_CX_W, CY, IH_SEG, TW), ("HE", IH_CX_E, CY, IH_SEG, TW),
-        ("VS", 0.0, IV_CY_S, TW, abs(CY - CROSS_V - IV_Y0)),
-        ("VN", 0.0, IV_CY_N, TW, abs(IV_Y1 - (CY + CROSS_V))),
-        ("Cross", 0.0, CY, TW, TW),
-        ("HW2", IH_CX_W, H2_Y, IH_SEG, TW), ("HE2", IH_CX_E, H2_Y, IH_SEG, TW),
-        ("Cross2", 0.0, H2_Y, TW, TW),
-        ("HW3", IH_CX_W, H3_Y, IH_SEG, TW), ("HE3", IH_CX_E, H3_Y, IH_SEG, TW),
-        ("Cross3", 0.0, H3_Y, TW, TW),
-    ]:
-        _box(stage, f"/World/InnerRoad/{nm}", cx, cy, TZ, sx, sy, TH,
-             "track", ASPHALT, rough=0.9)
-
-    # ── 차선 마킹 (white_lane 클래스)
+    # ── 차선 마킹 (흰색 실선 2줄, 중앙선·정지선·내부 도로 없음)
     UsdGeom.Scope.Define(stage, "/World/Marks")
 
     def _solid(path, cx, cy, sx, sy):
         _box(stage, path, cx, cy, MZ, sx, sy, MH, "mk_white", WHITE, rough=0.05, emit=EW)
 
     UsdGeom.Scope.Define(stage, "/World/Marks/Straight")
-    _solid("/World/Marks/Straight/BS",    0.0,         BY - EDGE, BL_inner, LW)
-    _solid("/World/Marks/Straight/BN",    0.0,         BY + EDGE, BL_inner, LW)
-    _solid("/World/Marks/Straight/RE",    RX + EDGE,   CY,        LW, VL_inner)
-    _solid("/World/Marks/Straight/RW",    RX - EDGE,   CY,        LW, VL_inner)
-    _solid("/World/Marks/Straight/TN",    0.0,         TY + EDGE, BL_inner, LW)
-    _solid("/World/Marks/Straight/TS",    0.0,         TY - EDGE, BL_inner, LW)
-    _solid("/World/Marks/Straight/LW",    LX - EDGE,   CY,        LW, VL_inner)
-    _solid("/World/Marks/Straight/LE",    LX + EDGE,   CY,        LW, VL_inner)
-    _solid("/World/Marks/Straight/Start", 0.0,         BY,        LW * 4, TW)
+    _solid("/World/Marks/Straight/BS",  0.0,       BY - EDGE, BL_inner, LW)
+    _solid("/World/Marks/Straight/BN",  0.0,       BY + EDGE, BL_inner, LW)
+    _solid("/World/Marks/Straight/RE",  RX + EDGE, CY,        LW, VL_inner)
+    _solid("/World/Marks/Straight/RW",  RX - EDGE, CY,        LW, VL_inner)
+    _solid("/World/Marks/Straight/TN",  0.0,       TY + EDGE, BL_inner, LW)
+    _solid("/World/Marks/Straight/TS",  0.0,       TY - EDGE, BL_inner, LW)
+    _solid("/World/Marks/Straight/LW",  LX - EDGE, CY,        LW, VL_inner)
+    _solid("/World/Marks/Straight/LE",  LX + EDGE, CY,        LW, VL_inner)
 
     UsdGeom.Scope.Define(stage, "/World/Marks/Corners")
 
@@ -254,46 +234,25 @@ def build_scene():
         UsdGeom.Scope.Define(stage, sp)
         _corner_2arcs(sp, pvx, pvy, a0, a1)
 
-    UsdGeom.Scope.Define(stage, "/World/Marks/Inner")
-    for nm, cx, cy, sx, sy in [
-        ("HW/S", IH_CX_W, CY - EDGE, IH_SEG, LW), ("HW/N", IH_CX_W, CY + EDGE, IH_SEG, LW),
-        ("HE/S", IH_CX_E, CY - EDGE, IH_SEG, LW), ("HE/N", IH_CX_E, CY + EDGE, IH_SEG, LW),
-        ("VS/W", -EDGE, IV_CY_S, LW, abs(CY - CROSS_V - IV_Y0)),
-        ("VS/E",  EDGE, IV_CY_S, LW, abs(CY - CROSS_V - IV_Y0)),
-        ("VN/W", -EDGE, IV_CY_N, LW, abs(IV_Y1 - (CY + CROSS_V))),
-        ("VN/E",  EDGE, IV_CY_N, LW, abs(IV_Y1 - (CY + CROSS_V))),
-    ]:
-        parent = f"/World/Marks/Inner/{nm.split('/')[0]}"
-        UsdGeom.Scope.Define(stage, parent)
-        _solid(f"/World/Marks/Inner/{nm}", cx, cy, sx, sy)
-
-    # ── 정지선 (stop_line 클래스)
-    UsdGeom.Scope.Define(stage, "/World/Track/StopLines")
-    for nm, cx, cy, sx, sy in [
-        ("stop_N",  0.0,                 CY + CROSS_H + SL_OFF, TW,     SL_THK),
-        ("stop_S",  0.0,                 CY - CROSS_H - SL_OFF, TW,     SL_THK),
-        ("stop_E",  CROSS_H + SL_OFF,    CY,                    SL_THK, TW    ),
-        ("stop_W", -(CROSS_H + SL_OFF),  CY,                    SL_THK, TW    ),
-    ]:
-        _box(stage, f"/World/Track/StopLines/{nm}",
-             cx, cy, MZ, sx, sy, MH, "mk_white", WHITE, rough=0.4, emit=EW)
-
     # ── 장애물 (semantic 없음 — 레이블 불필요)
+    # run_track_sim.py 와 동일하게 RED 사용 → 흰 차선 마킹과 혼동 방지
+    RED = (1.00, 0.00, 0.00)
     UsdGeom.Scope.Define(stage, "/World/Obstacles")
+    OBH = 0.25; OBS = 0.05
     for pname, ox, oy in [
-        ("Obs0", -1.00, TY + LANE * 0.60), ("Obs1",  0.00, TY - LANE * 0.60),
-        ("Obs2", +1.00, TY + LANE * 0.60),
-        ("ObsL0", LX + LANE * 0.60, -3.0), ("ObsL1", LX - LANE * 0.60, 0.0),
-        ("ObsL2", LX + LANE * 0.60, +3.0),
+        ("Obs0",  -1.00, TY + LANE * 0.60),
+        ("Obs1",   0.00, TY - LANE * 0.60),
+        ("Obs2",  +1.00, TY + LANE * 0.60),
+        ("ObsL1", LX - LANE * 0.60,   0.0),
+        ("ObsL2", LX + LANE * 0.60,  +3.0),
     ]:
         _box(stage, f"/World/Obstacles/{pname}",
-             ox, oy, 0.15, 0.15, 0.15, 0.30, "obs_cube", WHITE, phys=True)
+             ox, oy, OBH / 2, OBS, OBS, OBH, "obs_red", RED, phys=True)
 
     # ── 시맨틱 레이블 부여
-    _add_semantics(stage, "/World/Marks",              "white_lane")
-    _add_semantics(stage, "/World/Track/StopLines",    "stop_line")
+    _add_semantics(stage, "/World/Marks", "white_lane")
 
-    print("[INFO] 씬 구성 완료 + 시맨틱 레이블 적용")
+    print("[INFO] 씬 구성 완료 (run_track_sim.py v8 동일)")
 
 
 # ─── 트랙 웨이포인트 ──────────────────────────────────────────────────────────

@@ -133,6 +133,10 @@ class BehaviorManager(Node):
         # 근접 시 감속 (STOP_DIST 이하면 정지)
         linear = self._lane_linear * factor
 
+        # 정지 상태(linear≈0)에서는 APF 횡방향 척력 비활성화 → 제자리 회전 방지
+        if linear < 0.01:
+            angular = 0.0
+
         self.get_logger().info(
             f'[APF] fy={self._rep_fy:+.2f} d={self._min_front:.2f} '
             f'laneW={lane_w:.2f} → spd={linear:.2f} ang={angular:+.2f}')

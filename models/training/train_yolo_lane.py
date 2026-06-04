@@ -66,17 +66,28 @@ def find_latest_run(project_dir: Path) -> Path | None:
     return runs[-1] if runs else None
 
 
-def export_onnx(weights: Path):
+def export_onnx(weights: Path, imgsz: int = 640):
     from ultralytics import YOLO
     model = YOLO(str(weights))
     out = model.export(
         format="onnx",
-        imgsz=640,
+        imgsz=imgsz,
         dynamic=False,
         opset=17,
         simplify=True,
     )
     print(f"[INFO] ONNX 내보내기 완료: {out}")
+    return out
+
+
+def export_ncnn(weights: Path, imgsz: int = 640):
+    from ultralytics import YOLO
+    model = YOLO(str(weights))
+    out = model.export(
+        format="ncnn",
+        imgsz=imgsz,
+    )
+    print(f"[INFO] NCNN 내보내기 완료: {out}")
     return out
 
 
@@ -151,7 +162,8 @@ def train(args):
 
     best_pt = Path(results.save_dir) / "weights" / "best.pt"
     if best_pt.exists():
-        export_onnx(best_pt)
+        export_onnx(best_pt, imgsz=args.imgsz)
+        export_ncnn(best_pt, imgsz=args.imgsz)
     else:
         print(f"[WARN] best.pt 없음: {best_pt}")
 
@@ -167,7 +179,8 @@ def main():
         if latest is None:
             print("[ERROR] 학습된 가중치 없음")
             sys.exit(1)
-        export_onnx(latest)
+        export_onnx(latest, imgsz=args.imgsz)
+        export_ncnn(latest, imgsz=args.imgsz)
         return
 
     validate_dataset(args.data)

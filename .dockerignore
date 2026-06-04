@@ -1,0 +1,15 @@
+.git/
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+.venv_train/
+data/
+runs/
+weeks_work/
+docs/
+isaac_sim/
+models/training/
+models/runs/*/weights/*.pt
+models/runs/*/weights/best_dynamic_int8.onnx
+models/runs/*/weights/best_int8.onnx

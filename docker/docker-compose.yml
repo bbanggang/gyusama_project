@@ -4,35 +4,36 @@ services:
   # camera-node는 호스트 libcamera RPi fork 버전과 컨테이너 버전 불일치로
   # 호스트에서 직접 실행
   inference-node:
-    build:
-      context: .
-      dockerfile: Dockerfile.rpi5
+    image: bbanggang/gyusama-rpi5:latest
     container_name: inference-node
     network_mode: host
     ipc: host                        # 호스트 /dev/shm 공유 (FastDDS SHM 전송)
     stdin_open: true                 # 's'/'q' 키 입력 수신
     tty: true
     volumes:
-      - ../:/ros2_ws                 # 프로젝트 루트 → /ros2_ws (모델 경로 자동 탐색)
+      - ~/gyusama-project/config:/ros2_ws/config          # 재빌드 없이 파라미터 튜닝
+      - ~/gyusama-project/models/inference_node:/ros2_ws/models/inference_node  # 코드 핫 리로드
     environment:
       - ROS_DOMAIN_ID=1
       - PYTHONUNBUFFERED=1
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - CAMERA_FLIP=1                  # IMX219 180° 회전 보정 (RPi5 PiSP 파이프라인)
       - CMD_VEL_STAMPED=1              # turtlebot3_node Jazzy: TwistStamped 사용
-    command: python3 /ros2_ws/models/inference_node/lane_detect.py
+      - AUTOSTART=${AUTOSTART:-0}      # 1로 설정 시 's' 키 없이 바로 주행 시작
+      - YOLO_SZ=320                    # 320×320 경량 모델 (FPS 향상)
+      - PUBLISH_DEBUG=${PUBLISH_DEBUG:-0}  # 0=디버그 이미지 발행 안 함 (FPS 향상), 1=발행
+      - DIRECT_CMD_VEL=${DIRECT_CMD_VEL:-0}  # 1=behavior-node 없이 /cmd_vel 직접 발행 (단독 테스트)
+    command: python3 /ros2_ws/models/inference_node/lane_detect_ncnn.py
     restart: unless-stopped
 
   # ── LiDAR 장애물 감지 노드 (obstacle_node.py → /obstacle/state) ──────
   obstacle-node:
-    build:
-      context: .
-      dockerfile: Dockerfile.rpi5
+    image: bbanggang/gyusama-rpi5:latest
     container_name: obstacle-node
     network_mode: host
     ipc: host
     volumes:
-      - ../:/ros2_ws
+      - ~/gyusama-project/config:/ros2_ws/config  # 재빌드 없이 파라미터 튜닝
     environment:
       - ROS_DOMAIN_ID=1
       - PYTHONUNBUFFERED=1
@@ -42,14 +43,12 @@ services:
 
   # ── Behavior Tree 관리 노드 (behavior_manager.py → /cmd_vel) ─────────
   behavior-node:
-    build:
-      context: .
-      dockerfile: Dockerfile.rpi5
+    image: bbanggang/gyusama-rpi5:latest
     container_name: behavior-node
     network_mode: host
     ipc: host
     volumes:
-      - ../:/ros2_ws
+      - ~/gyusama-project/config:/ros2_ws/config  # 재빌드 없이 파라미터 튜닝
     environment:
       - ROS_DOMAIN_ID=1
       - PYTHONUNBUFFERED=1
@@ -60,9 +59,7 @@ services:
 
   # ── 모터 제어 노드 (Dynamixel / TurtleBot3 bringup) ──────────────────
   control-node:
-    build:
-      context: .
-      dockerfile: Dockerfile.rpi5
+    image: bbanggang/gyusama-rpi5:latest
     container_name: control-node
     network_mode: host
     privileged: true                  # Dynamixel USB 시리얼 접근 권한

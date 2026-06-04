@@ -44,24 +44,45 @@ ROOT = Path(__file__).resolve().parent.parent.parent  # gyusama-project/
 
 # ─── 카메라 파라미터 ───────────────────────────────────────────────────────────
 IMG_W, IMG_H = 640, 480
-YOLO_SZ      = 640
+YOLO_SZ      = int(os.environ.get('YOLO_SZ', '640'))  # 320×320 모델 사용 시 YOLO_SZ=320
+
+# ─── YAML 파라미터 로드 (config/apf_params.yaml → lane_detect 섹션) ────────────
+def _load_lane_params():
+    cfg_path = ROOT / 'config' / 'apf_params.yaml'
+    defaults = dict(
+        max_speed=0.14, min_speed=0.08,
+        max_angular=12.0, kp_angular=11.0,
+        conf_thresh=0.12, steer_exp=1.4,
+        lane_roi_top=0.50, lane_track_thresh=80,
+    )
+    if not cfg_path.exists():
+        return defaults
+    try:
+        import yaml
+        data = yaml.safe_load(cfg_path.read_text()) or {}
+        p = data.get('lane_detect', {})
+        return {k: p.get(k, v) for k, v in defaults.items()}
+    except Exception:
+        return defaults
+
+_LP = _load_lane_params()
 
 # ─── 검출 파라미터 ─────────────────────────────────────────────────────────────
-CONF_THRESH = 0.12   # 가장자리 차선은 신뢰도가 낮게 나옴 → 낮게 설정
+CONF_THRESH = float(_LP['conf_thresh'])
 NMS_IOU_THR = 0.45
 
 # ─── 차선 ROI ──────────────────────────────────────────────────────────────────
-LANE_ROI_TOP_RATIO = 0.50   # 상단 이 비율 위는 무시
+LANE_ROI_TOP_RATIO = float(_LP['lane_roi_top'])   # 상단 이 비율 위는 무시
 
 # ─── 제어 파라미터 ─────────────────────────────────────────────────────────────
-MAX_SPEED   = 0.14   # 직선 속도
-MIN_SPEED   = 0.08   # 커브 속도
-MAX_ANGULAR = 12.0   # 11.0→12.0: 조향 상한 상향
-KP_ANGULAR  = 11.0   # 10.0→11.0: 조향 게인 상향
-STEER_EXP   = 1.4    # 큰 오프셋(커브)에서 조향 가파르게
+MAX_SPEED   = float(_LP['max_speed'])    # 직선 속도
+MIN_SPEED   = float(_LP['min_speed'])    # 커브 속도
+MAX_ANGULAR = float(_LP['max_angular'])  # 조향 상한
+KP_ANGULAR  = float(_LP['kp_angular'])  # 조향 P 게인
+STEER_EXP   = float(_LP['steer_exp'])   # 큰 오프셋(커브)에서 조향 가파르게
 
 # ─── 차선별 독립 추적 ──────────────────────────────────────────────────────────
-LANE_TRACK_THRESH = 80     # 마지막 위치에서 이 픽셀 이내 검출만 해당 차선으로 수락
+LANE_TRACK_THRESH = int(_LP['lane_track_thresh'])  # 마지막 위치에서 이 픽셀 이내만 수락
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -277,8 +298,13 @@ class LaneDetectNode(Node):
 
         self.create_subscription(RosImage, "/camera/image_raw", self._cb_image, best_effort_qos)
 
-        msg_type     = TwistStamped if _USE_STAMPED else Twist
-        self.cmd_pub = self.create_publisher(msg_type, "/lane/cmd_vel",      10)
+        msg_type = TwistStamped if _USE_STAMPED else Twist
+        # DIRECT_CMD_VEL=1 이면 behavior-node 없이 /cmd_vel 로 직접 발행 (단독 테스트용)
+        _direct = os.environ.get('DIRECT_CMD_VEL', '0') == '1'
+        _topic  = '/cmd_vel' if _direct else '/lane/cmd_vel'
+        self.cmd_pub = self.create_publisher(msg_type, _topic, 10)
+        if _direct:
+            self.get_logger().info(f"[모드] DIRECT_CMD_VEL=1 — /cmd_vel 직접 발행 (behavior-node 불필요)")
         self.dbg_pub = self.create_publisher(RosImage, "/lane/debug_image",  1)
 
         self._start_time     = time.time()
@@ -363,12 +389,14 @@ class LaneDetectNode(Node):
             infer_ms = self.detector.last_infer_ms if self.detector else 0.0
             self.get_logger().info(
                 f"[PERF] 처리속도: {self._fps:.1f} FPS | "
-                f"ONNX 추론: {infer_ms:.1f} ms ({1000/infer_ms:.0f} FPS 등가)"
+                f"ncnn 추론: {infer_ms:.1f} ms ({1000/infer_ms:.0f} FPS 등가) | "
+                f"콜백전체: {1000/self._fps:.0f} ms"
                 if infer_ms > 0 else
                 f"[PERF] 처리속도: {self._fps:.1f} FPS"
             )
 
         # ── 1) 차선 bbox 검출 ──────────────────────────────────────────────────
+        _t_infer = time.perf_counter()
         if self.detector is not None:
             boxes = self.detector.infer(bgr)
             offset, info = compute_lane_offset(boxes, IMG_W)
@@ -440,8 +468,17 @@ class LaneDetectNode(Node):
             self._publish_debug(bgr, boxes, info, offset or 0.0, f"STANDBY|{label}")
             return
 
+        _t_debug = time.perf_counter()
         self._publish_cmd(speed, ang)
-        self._publish_debug(bgr, boxes, info, offset or 0.0, label)
+        if os.environ.get('PUBLISH_DEBUG', '1') != '0':
+            self._publish_debug(bgr, boxes, info, offset or 0.0, label)
+        if self._frame_count % 100 == 1:   # 100프레임마다 구간별 타이밍 출력
+            total_ms = (time.perf_counter() - _t_infer) * 1000
+            debug_ms = (time.perf_counter() - _t_debug) * 1000
+            infer_ms = self.detector.last_infer_ms if self.detector else 0
+            self.get_logger().info(
+                f"[TIME] 추론={infer_ms:.0f}ms  디버그발행={debug_ms:.0f}ms  전체콜백={total_ms:.0f}ms"
+            )
 
     def _publish_cmd(self, linear: float, angular: float):
         if _USE_STAMPED:
