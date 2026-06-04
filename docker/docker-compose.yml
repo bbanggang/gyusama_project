@@ -22,10 +22,20 @@ services:
       - CAMERA_FLIP=1                  # IMX219 180° 회전 보정 (RPi5 PiSP 파이프라인)
       - CMD_VEL_STAMPED=1              # turtlebot3_node Jazzy: TwistStamped 사용
       - AUTOSTART=${AUTOSTART:-0}      # 1로 설정 시 's' 키 없이 바로 주행 시작
-      - YOLO_SZ=320                    # 320×320 경량 모델 (FPS 향상)
+      - INFER_ENGINE=${INFER_ENGINE:-hailo}  # hailo=NPU (Phase 4 이후 기본) | ncnn=CPU (롤백/비교용)
+      - YOLO_SZ=${YOLO_SZ:-640}        # hailo=640 / ncnn=320 권장 (HEF·NCNN 모델 메타와 일치)
+      - HEF_MODEL=${HEF_MODEL:-}       # 비우면 lane_det*/weights/*.hef 자동 탐색
       - PUBLISH_DEBUG=${PUBLISH_DEBUG:-0}  # 0=디버그 이미지 발행 안 함 (FPS 향상), 1=발행
       - DIRECT_CMD_VEL=${DIRECT_CMD_VEL:-0}  # 1=behavior-node 없이 /cmd_vel 직접 발행 (단독 테스트)
-    command: python3 /ros2_ws/models/inference_node/lane_detect_ncnn.py
+    # INFER_ENGINE 환경변수로 hailo / ncnn 노드 전환 (즉시 롤백 가능)
+    command: >
+      bash -c "
+        if [ \"$${INFER_ENGINE:-hailo}\" = \"hailo\" ]; then
+          exec python3 /ros2_ws/models/inference_node/lane_detect_hailo.py
+        else
+          exec python3 /ros2_ws/models/inference_node/lane_detect_ncnn.py
+        fi
+      "
     restart: unless-stopped
 
   # ── LiDAR 장애물 감지 노드 (obstacle_node.py → /obstacle/state) ──────
