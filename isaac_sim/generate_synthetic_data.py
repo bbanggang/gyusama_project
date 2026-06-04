@@ -383,13 +383,13 @@ def main():
 
     saved = 0
     for idx, split in enumerate(split_list):
-        # 웨이포인트 선택 (순환 + 약간의 랜덤 오프셋)
+        # 웨이포인트 선택 (순환 + 랜덤 오프셋 — yolov8s 640 학습용 다양화 강화)
         wp = waypoints[idx % len(waypoints)]
-        rx = wp[0] + random.uniform(-0.04, 0.04)
-        ry = wp[1] + random.uniform(-0.04, 0.04)
-        rz_cam = CAMERA_H + random.uniform(-0.01, 0.01)
-        yaw_deg = wp[2] + random.uniform(-8.0, 8.0)
-        pitch_deg = PITCH_DEG + random.uniform(-5.0, 5.0)
+        rx = wp[0] + random.uniform(-0.10, 0.10)        # x 변이 (±0.04 → ±0.10)
+        ry = wp[1] + random.uniform(-0.10, 0.10)        # y 변이 (±0.04 → ±0.10)
+        rz_cam = CAMERA_H + random.uniform(-0.03, 0.03) # 높이 변이 (±0.01 → ±0.03)
+        yaw_deg = wp[2] + random.uniform(-15.0, 15.0)   # yaw 변이 (±8° → ±15°)
+        pitch_deg = PITCH_DEG + random.uniform(-8.0, 8.0)  # pitch 변이 (±5° → ±8°)
 
         # 카메라 위치·방향 업데이트
         # SetRotate(90+pitch, 0, yaw-90): USD XYZ Euler 에서 올바른 전방+하방 시선
@@ -397,12 +397,23 @@ def main():
         xf.SetTranslate(Gf.Vec3d(rx, ry, rz_cam))
         xf.SetRotate(Gf.Vec3f(90.0 + pitch_deg, 0.0, yaw_deg - 90.0))
 
-        # 조명 도메인 랜덤화 (어두운 아스팔트 vs 흰 마킹 대비 유지 범위)
+        # 조명 도메인 랜덤화 — 강도 범위 확대 + 위치/색온도 다양화
         UsdLux.DomeLight(dome_prim).CreateIntensityAttr().Set(
-            random.uniform(50, 200)
+            random.uniform(30, 400)         # 50~200 → 30~400
         )
         UsdLux.RectLight(rect_prim).CreateIntensityAttr().Set(
-            random.uniform(1000, 5000)
+            random.uniform(500, 6000)       # 1000~5000 → 500~6000
+        )
+        # RectLight 위치 Y 다양화 (그림자/하이라이트 방향 변화)
+        UsdGeom.XformCommonAPI(rect_prim).SetTranslate(
+            Gf.Vec3d(0, random.uniform(-3.0, 3.0), 8)
+        )
+        # RectLight 색온도 다양화 (형광등/일광/저녁 시뮬, RGB ±15%)
+        rect_r = 1.0 + random.uniform(-0.15, 0.15)
+        rect_g = 1.0 + random.uniform(-0.15, 0.15)
+        rect_b = 1.0 + random.uniform(-0.15, 0.15)
+        UsdLux.RectLight(rect_prim).CreateColorAttr().Set(
+            Gf.Vec3f(max(0.0, rect_r), max(0.0, rect_g), max(0.0, rect_b))
         )
 
         # 렌더 파이프라인 실행 — rep.orchestrator.step() 으로 annotator 데이터 갱신
@@ -420,7 +431,17 @@ def main():
             continue
 
         img_bgr    = cv2.cvtColor(img_rgba[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2BGR)
-        yolo_lines = rgb_to_detect_lines(img_bgr)
+        yolo_lines = rgb_to_detect_lines(img_bgr)   # 노이즈 적용 전 깨끗한 이미지로 라벨 생성
+
+        # ── 이미지 후처리 다양화 (실물 카메라 특성 시뮬) ──────────────
+        # ① 가우시안 노이즈 (σ 0~5, IMX219 ISO 노이즈 반영)
+        noise_sigma = random.uniform(0.0, 5.0)
+        if noise_sigma > 0.5:
+            noise = np.random.normal(0, noise_sigma, img_bgr.shape).astype(np.int16)
+            img_bgr = np.clip(img_bgr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        # ② 30% 확률 가벼운 가우시안 블러 (카메라 흔들림/모션 블러 반영)
+        if random.random() < 0.30:
+            img_bgr = cv2.GaussianBlur(img_bgr, (3, 3), 0)
 
         stem    = f"{idx:05d}"
         img_dir = os.path.join(OUT_DIR, "images", split)

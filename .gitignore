@@ -13,6 +13,7 @@ __pycache__/
 data/synthetic/images/
 data/synthetic/labels/
 data/synthetic/preview/
+data/synthetic_*_backup/
 models/runs/
 frames_*.gv
 frames_*.pdf
