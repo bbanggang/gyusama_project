@@ -436,6 +436,7 @@ class LaneDetectNode(Node):
 
         self._start_time   = time.time()
         self._last_offset  = 0.0
+        self._smooth_offset = 0.0    # EMA — 진동 완화용
         self._last_lx      = None
         self._last_rx      = None
         self._lost_frames  = 0
@@ -579,26 +580,43 @@ class LaneDetectNode(Node):
 
         self._last_offset = offset
 
+        # ── 1c) offset EMA smoothing (진동 완화) ───────────────────
+        # OFFSET_SMOOTH_ALPHA 가 작을수록 매끄러움 (응답 둔화)
+        #   0.3 → 약 3~4 frame 이동평균과 유사
+        #   0.5 → 2~3 frame
+        #   1.0 → smoothing 없음 (원본 그대로)
+        _alpha = float(os.environ.get('OFFSET_SMOOTH_ALPHA', '0.25'))
+        self._smooth_offset = (1 - _alpha) * self._smooth_offset + _alpha * offset
+        offset_for_ctrl = self._smooth_offset
+
         # ── 2) 조향 ──────────────────────────────────────────────────
         def _steer(off: float) -> float:
             nonlinear = math.copysign(abs(off) ** STEER_EXP, off)
             return float(-np.clip(KP_ANGULAR * nonlinear, -MAX_ANGULAR, MAX_ANGULAR))
 
-        ang = _steer(offset)
-        turn_factor = max(0.0, 1.0 - abs(offset))
+        ang = _steer(offset_for_ctrl)
+        turn_factor = max(0.0, 1.0 - abs(offset_for_ctrl))
         speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * turn_factor
         if self._lost_frames > 0:
             speed = MIN_SPEED
         label = label_hint
 
+        # debug 발행 N분의 1 (대역폭 절약 — WiFi 위 발행 delay 완화)
+        _pub_dbg_every = int(os.environ.get('PUBLISH_DEBUG_EVERY', '3'))
+        _should_pub_dbg = (
+            os.environ.get('PUBLISH_DEBUG', '1') != '0'
+            and self._frame_count % _pub_dbg_every == 0
+        )
+
         if not self._active:
             self._publish_cmd(0.0, 0.0)
-            self._publish_debug(bgr, boxes, info, offset or 0.0, f"STANDBY|{label}")
+            if _should_pub_dbg:
+                self._publish_debug(bgr, boxes, info, offset or 0.0, f"STANDBY|{label}")
             return
 
         _t_debug = time.perf_counter()
         self._publish_cmd(speed, ang)
-        if os.environ.get('PUBLISH_DEBUG', '1') != '0':
+        if _should_pub_dbg:
             self._publish_debug(bgr, boxes, info, offset or 0.0, label)
         if self._frame_count % 100 == 1:
             total_ms = (time.perf_counter() - _t_infer) * 1000
@@ -647,6 +665,13 @@ class LaneDetectNode(Node):
                  (255, 255, 255), 1)
         cv2.putText(vis, f"{label}  off={offset:+.2f}  det={len(boxes)}",
                     (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+        # 대역폭 절약 — DEBUG_IMG_W(디폴트 320)로 축소 후 발행
+        # 원본 800×600 → 320×240 = 데이터 약 1/6, 발행 비용 약 50ms → 10ms
+        _dbg_w = int(os.environ.get('DEBUG_IMG_W', '320'))
+        if _dbg_w > 0 and vis.shape[1] > _dbg_w:
+            _ratio = _dbg_w / vis.shape[1]
+            vis = cv2.resize(vis, (_dbg_w, int(vis.shape[0] * _ratio)))
 
         try:
             self.dbg_pub.publish(self.bridge.cv2_to_imgmsg(vis, encoding="bgr8"))
